@@ -260,7 +260,7 @@ func createProject(client *taikungoclient.Client, args CreateProjectArgs) (*mcp_
 		CloudCredentialID: args.CloudCredentialID,
 		IsKubernetes:      true,
 		MonitoringEnabled: args.Monitoring,
-		Message:           fmt.Sprintf("Project '%s' created successfully with ID %s", args.Name, projectID),
+		Message:           fmt.Sprintf("Project '%s' created successfully with ID %s. This creates project metadata only; add cluster nodes and run commit-project, or use create-cluster for end-to-end provisioning.", args.Name, projectID),
 		Success:           true,
 	}
 
@@ -362,7 +362,7 @@ func waitForProject(client *taikungoclient.Client, args WaitForProjectArgs) (*mc
 
 			if status == taikuncore.PROJECTSTATUS_READY && health == taikuncore.PROJECTHEALTH_HEALTHY {
 				return createJSONResponse(SuccessResponse{
-					Message: fmt.Sprintf("Project %d is now ready and healthy", args.ProjectId),
+					Message: fmt.Sprintf("Project %d is now ready and healthy. This confirms project state only; it does not imply Kubernetes nodes were added unless add-server-to-project/commit-project or create-cluster was used.", args.ProjectId),
 					Success: true,
 				}), nil
 			}

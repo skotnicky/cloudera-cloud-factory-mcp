@@ -242,6 +242,25 @@ type CreateProjectArgs struct {
 	KubernetesVersion   string `json:"kubernetesVersion,omitempty" jsonschema:"description=Kubernetes version to install (optional; Kubernetes projects only)"`
 }
 
+type CreateClusterArgs struct {
+	Name                string `json:"name" jsonschema:"required,description=Cluster project name (3-30 characters, alphanumeric with hyphens)"`
+	CloudCredentialID   int32  `json:"cloudCredentialId" jsonschema:"required,description=Cloud credential ID used for the cluster project"`
+	KubernetesProfileID int32  `json:"kubernetesProfileId,omitempty" jsonschema:"description=Kubernetes profile ID (optional; auto-selected when omitted and deterministic)"`
+	AlertingProfileID   int32  `json:"alertingProfileId,omitempty" jsonschema:"description=Alerting profile ID (optional; auto-selected when monitoring is enabled and deterministic)"`
+	Monitoring          bool   `json:"monitoring,omitempty" jsonschema:"description=Enable monitoring for the cluster project (default: false)"`
+	KubernetesVersion   string `json:"kubernetesVersion,omitempty" jsonschema:"description=Kubernetes version for the project (optional)"`
+	BastionCount        int32  `json:"bastionCount,omitempty" jsonschema:"description=Number of bastion nodes to add (default: 1)"`
+	MasterCount         int32  `json:"masterCount,omitempty" jsonschema:"description=Number of master nodes to add; must be odd (default: 1)"`
+	WorkerCount         int32  `json:"workerCount,omitempty" jsonschema:"description=Number of worker nodes to add (default: 1)"`
+	BastionFlavor       string `json:"bastionFlavor,omitempty" jsonschema:"description=Flavor override for bastion nodes (optional)"`
+	MasterFlavor        string `json:"masterFlavor,omitempty" jsonschema:"description=Flavor override for master nodes (optional)"`
+	WorkerFlavor        string `json:"workerFlavor,omitempty" jsonschema:"description=Flavor override for worker nodes (optional)"`
+	DiskSizeGB          int64  `json:"diskSizeGb,omitempty" jsonschema:"description=Root disk size in GB for all nodes (default 50 when omitted; some clouds require an explicit minimum)"`
+	VerifyTimeout       int32  `json:"verifyTimeout,omitempty" jsonschema:"description=Seconds to wait when verifying node creation (default: 300)"`
+	WaitForCreation     *bool  `json:"waitForCreation,omitempty" jsonschema:"description=Wait for project readiness after commit (default: true)"`
+	Timeout             int32  `json:"timeout,omitempty" jsonschema:"description=Timeout in seconds used by wait-for-project when waitForCreation=true (default: 1800)"`
+}
+
 type DeleteProjectArgs struct {
 	ProjectID int32 `json:"projectId" jsonschema:"required,description=ID of the project to delete"`
 }
@@ -832,6 +851,14 @@ func main() {
 		logger.Fatalf("Failed to register create-project tool: %v", err)
 	}
 	logger.Println("Registered create-project tool")
+
+	err = registerScopedTool(server, "create-cluster", "Create a Kubernetes cluster end-to-end (project, nodes, commit, optional wait) using profile-aware defaults and cloud-credential flavor discovery", func(args CreateClusterArgs) (*mcp_golang.ToolResponse, error) {
+		return createCluster(taikunClient, args)
+	})
+	if err != nil {
+		logger.Fatalf("Failed to register create-cluster tool: %v", err)
+	}
+	logger.Println("Registered create-cluster tool")
 
 	err = registerScopedTool(server, "delete-project", "Delete a project in Cloudera Cloud Factory. To confirm removal, call wait-for-project with waitDeleted true; if the project was empty, use a short timeout (about 10 to 30 seconds) because purge is usually fast.", func(args DeleteProjectArgs) (*mcp_golang.ToolResponse, error) {
 		return deleteProject(taikunClient, args)

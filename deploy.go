@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -33,9 +35,40 @@ const (
 	projectCommitModeProject projectCommitMode = "project"
 	projectCommitModeVM      projectCommitMode = "vm"
 
-	minCommitSizingCPU int32   = 4
-	minCommitSizingRAM float64 = 4
+	minCommitSizingCPU        int32   = 4
+	minCommitSizingRAM        float64 = 4
+	minBastionCPU             int32   = 2
+	minBastionRAM             float64 = 2
+	defaultClusterWaitTimeout         = 1800
+	// defaultCreateClusterDiskGB is used when diskSizeGb is omitted so cloud APIs
+	// receive an explicit root volume size (some providers reject unset / too-small disks).
+	defaultCreateClusterDiskGB int64 = 50
 )
+
+type clusterFlavorSelection struct {
+	Bastion string `json:"bastion"`
+	Master  string `json:"master"`
+	Worker  string `json:"worker"`
+}
+
+// distinctCreateClusterFlavorNames returns unique flavor names in bastion, master, worker order.
+func distinctCreateClusterFlavorNames(sel clusterFlavorSelection) []string {
+	order := []string{sel.Bastion, sel.Master, sel.Worker}
+	seen := make(map[string]struct{}, len(order))
+	var out []string
+	for _, name := range order {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
 
 func getProjectServerAddLock(projectId int32) *sync.Mutex {
 	projectServerAddLocksMu.Lock()
@@ -277,6 +310,452 @@ func addServerToProject(client *taikungoclient.Client, args AddServerArgs) (*mcp
 
 		time.Sleep(5 * time.Second)
 	}
+}
+
+func createCluster(client *taikungoclient.Client, args CreateClusterArgs) (*mcp_golang.ToolResponse, error) {
+	if strings.TrimSpace(args.Name) == "" {
+		return createJSONResponse(ErrorResponse{Error: "Cluster name is required"}), nil
+	}
+	if args.CloudCredentialID <= 0 {
+		return createJSONResponse(ErrorResponse{Error: "cloudCredentialId must be provided"}), nil
+	}
+
+	bastionCount := args.BastionCount
+	if bastionCount <= 0 {
+		bastionCount = 1
+	}
+	masterCount := args.MasterCount
+	if masterCount <= 0 {
+		masterCount = 1
+	}
+	if masterCount%2 == 0 {
+		return createJSONResponse(ErrorResponse{
+			Error:   "masterCount must be an odd number",
+			Details: "Use 1, 3, 5, ... masters to satisfy cluster quorum requirements.",
+		}), nil
+	}
+	workerCount := args.WorkerCount
+	if workerCount <= 0 {
+		workerCount = 1
+	}
+
+	projectArgs, projectError := resolveCreateClusterProjectArgs(client, args)
+	if projectError != nil {
+		return projectError, nil
+	}
+
+	createProjectResp, err := createProject(client, projectArgs)
+	if err != nil {
+		return nil, err
+	}
+	if !isToolResponseSuccess(createProjectResp) {
+		return createProjectResp, nil
+	}
+
+	projectID, ok := projectIDFromCreateProjectResponse(createProjectResp)
+	if !ok || projectID <= 0 {
+		return createJSONResponse(ErrorResponse{
+			Error:   "Project creation succeeded but project ID could not be parsed",
+			Details: "Retry with create-project to inspect the raw response and confirm API payload format.",
+		}), nil
+	}
+
+	if err := addCreatedProjectID(projectID); err != nil {
+		logger.Printf("Failed to persist created project ID %d from create-cluster: %v", projectID, err)
+	}
+
+	flavors, flavorError := resolveCreateClusterFlavors(client, args)
+	if flavorError != nil {
+		return createClusterFailureResponse(projectID, "flavor-selection", flavorError), nil
+	}
+
+	flavorNames := distinctCreateClusterFlavorNames(flavors)
+	if len(flavorNames) > 0 {
+		bindResp, bindErr := bindFlavorsToProject(client, BindFlavorsArgs{
+			ProjectId: projectID,
+			Flavors:   flavorNames,
+		})
+		if bindErr != nil {
+			return createClusterFailureResponse(projectID, "bind-flavors", createJSONResponse(ErrorResponse{
+				Error:   "Failed to bind flavors to project",
+				Details: bindErr.Error(),
+			})), nil
+		}
+		if !isToolResponseSuccess(bindResp) {
+			return createClusterFailureResponse(projectID, "bind-flavors", bindResp), nil
+		}
+	}
+
+	diskGB := args.DiskSizeGB
+	if diskGB <= 0 {
+		diskGB = defaultCreateClusterDiskGB
+	}
+
+	verifyTimeout := args.VerifyTimeout
+	if verifyTimeout <= 0 {
+		verifyTimeout = 300
+	}
+
+	clusterName := strings.TrimSpace(args.Name)
+	serverSteps := []AddServerArgs{
+		{
+			ProjectId:            projectID,
+			Name:                 fmt.Sprintf("%s-bastion", clusterName),
+			Role:                 "Bastion",
+			Flavor:               flavors.Bastion,
+			DiskSize:             diskGB,
+			Count:                bastionCount,
+			VerifyTimeoutSeconds: verifyTimeout,
+		},
+		{
+			ProjectId:            projectID,
+			Name:                 fmt.Sprintf("%s-master", clusterName),
+			Role:                 "Kubemaster",
+			Flavor:               flavors.Master,
+			DiskSize:             diskGB,
+			Count:                masterCount,
+			VerifyTimeoutSeconds: verifyTimeout,
+		},
+		{
+			ProjectId:            projectID,
+			Name:                 fmt.Sprintf("%s-worker", clusterName),
+			Role:                 "Kubeworker",
+			Flavor:               flavors.Worker,
+			DiskSize:             diskGB,
+			Count:                workerCount,
+			VerifyTimeoutSeconds: verifyTimeout,
+		},
+	}
+
+	for _, step := range serverSteps {
+		addResp, addErr := addServerToProject(client, step)
+		if addErr != nil {
+			return createClusterFailureResponse(projectID, "node-provisioning", createJSONResponse(ErrorResponse{
+				Error:   fmt.Sprintf("Failed adding %s nodes", step.Role),
+				Details: addErr.Error(),
+			})), nil
+		}
+		if !isToolResponseSuccess(addResp) {
+			return createClusterFailureResponse(projectID, "node-provisioning", addResp), nil
+		}
+	}
+
+	commitResp, commitErr := commitProject(client, CommitProjectArgs{ProjectId: projectID})
+	if commitErr != nil {
+		return createClusterFailureResponse(projectID, "commit", createJSONResponse(ErrorResponse{
+			Error:   "Failed to commit project",
+			Details: commitErr.Error(),
+		})), nil
+	}
+	if !isToolResponseSuccess(commitResp) {
+		return createClusterFailureResponse(projectID, "commit", commitResp), nil
+	}
+
+	waitForCreation := true
+	if args.WaitForCreation != nil {
+		waitForCreation = *args.WaitForCreation
+	}
+	if waitForCreation {
+		waitTimeout := args.Timeout
+		if waitTimeout <= 0 {
+			waitTimeout = defaultClusterWaitTimeout
+		}
+		waitResp, waitErr := waitForProject(client, WaitForProjectArgs{
+			ProjectId: projectID,
+			Timeout:   waitTimeout,
+		})
+		if waitErr != nil {
+			return createClusterFailureResponse(projectID, "wait-for-ready", createJSONResponse(ErrorResponse{
+				Error:   "Failed waiting for project readiness",
+				Details: waitErr.Error(),
+			})), nil
+		}
+		if !isToolResponseSuccess(waitResp) {
+			return createClusterFailureResponse(projectID, "wait-for-ready", waitResp), nil
+		}
+	}
+
+	return createJSONResponse(map[string]interface{}{
+		"success":             true,
+		"message":             fmt.Sprintf("Cluster %q provisioned successfully in project %d", args.Name, projectID),
+		"projectId":           projectID,
+		"projectCreated":      true,
+		"flavors":             flavors,
+		"kubernetesProfileId": projectArgs.KubernetesProfileID,
+		"alertingProfileId":   projectArgs.AlertingProfileID,
+		"monitoring":          projectArgs.Monitoring,
+		"counts": map[string]int32{
+			"bastion": bastionCount,
+			"master":  masterCount,
+			"worker":  workerCount,
+		},
+		"waitedForCreation": waitForCreation,
+	}), nil
+}
+
+func resolveCreateClusterProjectArgs(client *taikungoclient.Client, args CreateClusterArgs) (CreateProjectArgs, *mcp_golang.ToolResponse) {
+	projectArgs := CreateProjectArgs{
+		Name:              args.Name,
+		CloudCredentialID: args.CloudCredentialID,
+		Monitoring:        args.Monitoring,
+		KubernetesVersion: args.KubernetesVersion,
+	}
+
+	if args.KubernetesProfileID > 0 {
+		projectArgs.KubernetesProfileID = args.KubernetesProfileID
+	} else {
+		resolvedProfileID, errorResp := resolveDeterministicKubernetesProfileID(client, args.CloudCredentialID)
+		if errorResp != nil {
+			return CreateProjectArgs{}, errorResp
+		}
+		projectArgs.KubernetesProfileID = resolvedProfileID
+	}
+
+	if args.AlertingProfileID > 0 {
+		projectArgs.AlertingProfileID = args.AlertingProfileID
+	} else if args.Monitoring {
+		resolvedAlertingID, errorResp := resolveDeterministicAlertingProfileID(client)
+		if errorResp != nil {
+			return CreateProjectArgs{}, errorResp
+		}
+		projectArgs.AlertingProfileID = resolvedAlertingID
+	}
+
+	return projectArgs, nil
+}
+
+func resolveDeterministicKubernetesProfileID(client *taikungoclient.Client, cloudCredentialID int32) (int32, *mcp_golang.ToolResponse) {
+	items, httpResponse, err := client.Client.KubernetesProfilesAPI.KubernetesprofilesDropdown(context.Background()).
+		CloudId(cloudCredentialID).
+		Limit(3).
+		Execute()
+	if err != nil {
+		return 0, createError(httpResponse, err)
+	}
+	if errorResp := checkResponse(httpResponse, "resolve Kubernetes profile for create-cluster"); errorResp != nil {
+		return 0, errorResp
+	}
+
+	ids := extractDistinctIDs(items)
+	if len(ids) == 1 {
+		return ids[0], nil
+	}
+	if len(ids) == 0 {
+		return 0, createJSONResponse(ErrorResponse{
+			Error:   "Unable to auto-select Kubernetes profile",
+			Details: fmt.Sprintf("No Kubernetes profile found for cloudCredentialId %d. Provide kubernetesProfileId explicitly.", cloudCredentialID),
+		})
+	}
+	return 0, createJSONResponse(ErrorResponse{
+		Error:   "Unable to auto-select Kubernetes profile",
+		Details: fmt.Sprintf("Multiple Kubernetes profiles match cloudCredentialId %d (IDs: %v). Provide kubernetesProfileId explicitly.", cloudCredentialID, ids),
+	})
+}
+
+func resolveDeterministicAlertingProfileID(client *taikungoclient.Client) (int32, *mcp_golang.ToolResponse) {
+	items, httpResponse, err := client.Client.AlertingProfilesAPI.AlertingprofilesDropdown(context.Background()).
+		Execute()
+	if err != nil {
+		return 0, createError(httpResponse, err)
+	}
+	if errorResp := checkResponse(httpResponse, "resolve alerting profile for create-cluster"); errorResp != nil {
+		return 0, errorResp
+	}
+
+	ids := extractDistinctIDs(items)
+	if len(ids) == 1 {
+		return ids[0], nil
+	}
+	if len(ids) == 0 {
+		return 0, createJSONResponse(ErrorResponse{
+			Error:   "Monitoring is enabled but no alerting profile could be auto-selected",
+			Details: "No alerting profiles were found. Provide alertingProfileId explicitly or disable monitoring.",
+		})
+	}
+	return 0, createJSONResponse(ErrorResponse{
+		Error:   "Monitoring is enabled but alerting profile selection is ambiguous",
+		Details: fmt.Sprintf("Multiple alerting profiles are available (IDs: %v). Provide alertingProfileId explicitly.", ids),
+	})
+}
+
+func resolveCreateClusterFlavors(client *taikungoclient.Client, args CreateClusterArgs) (clusterFlavorSelection, *mcp_golang.ToolResponse) {
+	flavorsResp, httpResponse, err := client.Client.CloudCredentialAPI.CloudcredentialsAllFlavors(context.Background(), args.CloudCredentialID).Execute()
+	if err != nil {
+		return clusterFlavorSelection{}, createError(httpResponse, err)
+	}
+	if errorResp := checkResponse(httpResponse, "resolve flavors for create-cluster"); errorResp != nil {
+		return clusterFlavorSelection{}, errorResp
+	}
+
+	available := make([]FlavorSummary, 0)
+	if flavorsResp != nil {
+		for _, flavor := range flavorsResp.GetData() {
+			available = append(available, FlavorSummary{
+				Name: flavor.GetName(),
+				CPU:  flavor.GetCpu(),
+				RAM:  flavor.GetRam(),
+			})
+		}
+	}
+	if len(available) == 0 {
+		return clusterFlavorSelection{}, createJSONResponse(ErrorResponse{
+			Error:   "No flavors available for cloud credential",
+			Details: fmt.Sprintf("cloudCredentialId %d returned an empty flavor list; provide explicit node flavors after binding valid flavors.", args.CloudCredentialID),
+		})
+	}
+
+	sort.Slice(available, func(i, j int) bool {
+		if available[i].CPU != available[j].CPU {
+			return available[i].CPU < available[j].CPU
+		}
+		if available[i].RAM != available[j].RAM {
+			return available[i].RAM < available[j].RAM
+		}
+		return strings.ToLower(available[i].Name) < strings.ToLower(available[j].Name)
+	})
+
+	// Workers use the same minimum as Kubemaster/commit preflight (4 CPU / 4 GB RAM)
+	// so auto-selected workers are not smaller than control-plane sizing when monitoring is off.
+	workerMinCPU := minCommitSizingCPU
+	workerMinRAM := minCommitSizingRAM
+
+	bastion, ok := selectFlavorForMinimum(available, args.BastionFlavor, minBastionCPU, minBastionRAM)
+	if !ok {
+		return clusterFlavorSelection{}, createJSONResponse(ErrorResponse{
+			Error:   "Unable to determine bastion flavor",
+			Details: fmt.Sprintf("Provide bastionFlavor explicitly or ensure a flavor with at least %d CPU / %.0f GB RAM is available.", minBastionCPU, minBastionRAM),
+		})
+	}
+	master, ok := selectFlavorForMinimum(available, args.MasterFlavor, minCommitSizingCPU, minCommitSizingRAM)
+	if !ok {
+		return clusterFlavorSelection{}, createJSONResponse(ErrorResponse{
+			Error:   "Unable to determine master flavor",
+			Details: fmt.Sprintf("Provide masterFlavor explicitly or ensure a flavor with at least %d CPU / %.0f GB RAM is available.", minCommitSizingCPU, minCommitSizingRAM),
+		})
+	}
+	worker, ok := selectFlavorForMinimum(available, args.WorkerFlavor, workerMinCPU, workerMinRAM)
+	if !ok {
+		return clusterFlavorSelection{}, createJSONResponse(ErrorResponse{
+			Error:   "Unable to determine worker flavor",
+			Details: fmt.Sprintf("Provide workerFlavor explicitly or ensure a flavor with at least %d CPU / %.0f GB RAM is available.", workerMinCPU, workerMinRAM),
+		})
+	}
+
+	return clusterFlavorSelection{
+		Bastion: bastion,
+		Master:  master,
+		Worker:  worker,
+	}, nil
+}
+
+func selectFlavorForMinimum(available []FlavorSummary, override string, minCPU int32, minRAM float64) (string, bool) {
+	override = strings.TrimSpace(override)
+	if override != "" {
+		for _, flavor := range available {
+			if strings.EqualFold(flavor.Name, override) && flavorMeetsMinimum(flavor, minCPU, minRAM) {
+				return flavor.Name, true
+			}
+		}
+		return "", false
+	}
+
+	for _, flavor := range available {
+		if flavorMeetsMinimum(flavor, minCPU, minRAM) {
+			return flavor.Name, true
+		}
+	}
+	return "", false
+}
+
+func extractDistinctIDs(value interface{}) []int32 {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+
+	var decoded interface{}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil
+	}
+
+	collected := []int32{}
+	var walk func(v interface{})
+	walk = func(v interface{}) {
+		switch typed := v.(type) {
+		case map[string]interface{}:
+			for key, nested := range typed {
+				if normalizeMCPLockKey(key) == "id" {
+					if id, ok := toMCPLockInt32(nested); ok && id > 0 {
+						collected = append(collected, id)
+					}
+				}
+				walk(nested)
+			}
+		case []interface{}:
+			for _, item := range typed {
+				walk(item)
+			}
+		}
+	}
+	walk(decoded)
+	return normalizeMCPLockIDs(collected)
+}
+
+func parseToolResponsePayload(response *mcp_golang.ToolResponse) (map[string]interface{}, bool) {
+	if response == nil || len(response.Content) == 0 || response.Content[0].TextContent == nil {
+		return nil, false
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(response.Content[0].TextContent.Text), &payload); err != nil {
+		return nil, false
+	}
+	return payload, true
+}
+
+func isToolResponseSuccess(response *mcp_golang.ToolResponse) bool {
+	payload, ok := parseToolResponsePayload(response)
+	if !ok {
+		return false
+	}
+
+	if errorMessage, hasError := payload["error"].(string); hasError && strings.TrimSpace(errorMessage) != "" {
+		return false
+	}
+	if success, hasSuccess := payload["success"].(bool); hasSuccess {
+		return success
+	}
+	return true
+}
+
+func createClusterFailureResponse(projectID int32, stage string, base *mcp_golang.ToolResponse) *mcp_golang.ToolResponse {
+	payload, ok := parseToolResponsePayload(base)
+	if !ok {
+		return createJSONResponse(map[string]interface{}{
+			"success":        false,
+			"error":          fmt.Sprintf("create-cluster failed during %s", stage),
+			"details":        fmt.Sprintf("Project %d was already created before this failure.", projectID),
+			"projectId":      projectID,
+			"projectCreated": true,
+			"stage":          stage,
+		})
+	}
+
+	errorMessage, hasError := payload["error"].(string)
+	if !hasError || strings.TrimSpace(errorMessage) == "" {
+		payload["error"] = fmt.Sprintf("create-cluster failed during %s", stage)
+	}
+	existingDetails, _ := payload["details"].(string)
+	if strings.TrimSpace(existingDetails) == "" {
+		payload["details"] = fmt.Sprintf("Project %d was already created before this failure.", projectID)
+	} else {
+		payload["details"] = fmt.Sprintf("%s Project %d was already created before this failure.", existingDetails, projectID)
+	}
+	payload["success"] = false
+	payload["projectId"] = projectID
+	payload["projectCreated"] = true
+	payload["stage"] = stage
+	return createJSONResponse(payload)
 }
 
 func commitProject(client *taikungoclient.Client, args CommitProjectArgs) (*mcp_golang.ToolResponse, error) {

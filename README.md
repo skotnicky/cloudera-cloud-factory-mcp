@@ -124,6 +124,8 @@ Lock precedence and runtime behavior:
 - Runtime `mcp-lock` can only narrow scope within those hard limits.
 - If runtime `mcp-lock` includes IDs outside hard limits, the request is rejected.
 - If no hard limits and no runtime lock are set, MCP is unrestricted.
+- Projects created through `create-project` and `create-virtual-cluster` are auto-added to an allowlist and treated as additional allowed project IDs alongside hard-limit projects.
+- Auto-added project IDs are persisted in a local state file (`/tmp/cloudera_cloud_factory_mcp_lock_state.json` by default, configurable with `MCP_LOCK_STATE_PATH`).
 
 ## Usage
 
@@ -198,6 +200,7 @@ The permission key format is `mcp__<server-name>__<tool-name>`. The value is mat
 The server currently exposes tooling across these areas:
 
 - Project management: create, list, inspect, commit, wait, and delete projects
+- Cluster provisioning: create a full Kubernetes cluster via `create-cluster` (project + nodes + commit + optional wait)
 - Virtual clusters: create, list, and delete virtual clusters
 - Kubernetes: deploy YAML, patch resources, list resources, create or fetch kubeconfigs
 - Cluster nodes and servers: add servers to projects, list them, and remove them
@@ -216,6 +219,9 @@ The server currently exposes tooling across these areas:
 - Scope-aware tools fail fast with a structured JSON error when the Robot User lacks required access.
 - All tool responses are JSON, not free-form text.
 - After adding Kubernetes servers or making standalone VM changes, call `commit-project` to provision them.
+- `create-cluster` is the recommended path for end-to-end cluster creation because it avoids the empty-project-only flow.
+- `create-cluster` accepts explicit `kubernetesProfileId` / `alertingProfileId`; when omitted it auto-selects only when a single deterministic profile exists, otherwise it returns an explicit JSON error asking for profile IDs.
+- `create-cluster` can auto-pick node flavors from the target cloud credential's available flavors (or accept explicit flavor overrides).
 - Standalone VM workflows may require binding images and flavors to the project first.
 - In general, user requests for a "VM" or "server" map to standalone VM workflows, while "node" usually means adding capacity to a Kubernetes cluster.
 

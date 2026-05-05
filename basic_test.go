@@ -325,6 +325,27 @@ func TestArgumentStructs(t *testing.T) {
 			},
 		},
 		{
+			name: "CreateClusterArgs",
+			data: CreateClusterArgs{
+				Name:                "test-cluster",
+				CloudCredentialID:   123,
+				KubernetesProfileID: 456,
+				AlertingProfileID:   789,
+				Monitoring:          true,
+				KubernetesVersion:   "1.28.0",
+				BastionCount:        1,
+				MasterCount:         1,
+				WorkerCount:         2,
+				BastionFlavor:       "small",
+				MasterFlavor:        "medium",
+				WorkerFlavor:        "large",
+				DiskSizeGB:          50,
+				VerifyTimeout:       300,
+				WaitForCreation:     func() *bool { v := true; return &v }(),
+				Timeout:             1800,
+			},
+		},
+		{
 			name: "DeleteProjectArgs",
 			data: DeleteProjectArgs{
 				ProjectID: 123,

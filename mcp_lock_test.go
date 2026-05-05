@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	mcp_golang "github.com/metoro-io/mcp-golang"
@@ -13,6 +15,8 @@ func resetMCPLockStateForTest() {
 	defer globalMCPLockState.mu.Unlock()
 	globalMCPLockState.hardLimitScope = nil
 	globalMCPLockState.runtimeScope = nil
+	globalMCPLockState.createdProjectIDs = nil
+	mcpLockStateFilePath = ""
 }
 
 func parseResponseMap(t *testing.T, response *mcp_golang.ToolResponse) map[string]interface{} {
@@ -50,9 +54,11 @@ func TestParseMCPLockIDList(t *testing.T) {
 func TestInitMCPLockFromEnv(t *testing.T) {
 	resetMCPLockStateForTest()
 
+	statePath := filepath.Join(t.TempDir(), "mcp-lock-state.json")
 	env := map[string]string{
 		mcpLockOrgIDsEnv:     "10,20",
 		mcpLockProjectIDsEnv: "300,400",
+		mcpLockStatePathEnv:  statePath,
 	}
 	if err := initMCPLockFromEnv(func(key string) string { return env[key] }); err != nil {
 		t.Fatalf("initMCPLockFromEnv returned error: %v", err)
@@ -88,9 +94,11 @@ func TestParseMCPLockIDsFromArgs(t *testing.T) {
 
 func TestInitMCPLockFromConfigArgsOverrideEnv(t *testing.T) {
 	resetMCPLockStateForTest()
+	statePath := filepath.Join(t.TempDir(), "mcp-lock-state.json")
 	env := map[string]string{
 		mcpLockOrgIDsEnv:     "1,2",
 		mcpLockProjectIDsEnv: "10,20",
+		mcpLockStatePathEnv:  statePath,
 	}
 	args := []string{
 		mcpLockOrgIDsArg, "9",
@@ -115,10 +123,14 @@ func TestInitMCPLockFromConfigArgsOverrideEnv(t *testing.T) {
 
 func TestMCPLockRuntimeMustBeSubsetOfHardLimitAndClearFallsBack(t *testing.T) {
 	resetMCPLockStateForTest()
+	statePath := filepath.Join(t.TempDir(), "mcp-lock-state.json")
 
 	if err := initMCPLockFromEnv(func(key string) string {
 		if key == mcpLockProjectIDsEnv {
 			return "111"
+		}
+		if key == mcpLockStatePathEnv {
+			return statePath
 		}
 		return ""
 	}); err != nil {
@@ -159,6 +171,7 @@ func TestMCPLockRuntimeMustBeSubsetOfHardLimitAndClearFallsBack(t *testing.T) {
 
 func TestEnforceMCPLockBlocksOutOfScopeProject(t *testing.T) {
 	resetMCPLockStateForTest()
+	mcpLockStateFilePath = filepath.Join(t.TempDir(), "mcp-lock-state.json")
 	_, err := mcpLock(MCPLockArgs{ProjectIDs: []int32{100}})
 	if err != nil {
 		t.Fatalf("mcpLock returned error: %v", err)
@@ -176,6 +189,7 @@ func TestEnforceMCPLockBlocksOutOfScopeProject(t *testing.T) {
 
 func TestEnforceMCPLockAllowsInScopeProjectAndPayloadExtraction(t *testing.T) {
 	resetMCPLockStateForTest()
+	mcpLockStateFilePath = filepath.Join(t.TempDir(), "mcp-lock-state.json")
 	_, err := mcpLock(MCPLockArgs{ProjectIDs: []int32{300}})
 	if err != nil {
 		t.Fatalf("mcpLock returned error: %v", err)
@@ -242,6 +256,7 @@ func TestEffectiveScopeIntersectsHardLimitAndRuntime(t *testing.T) {
 
 func TestEnforceMCPLockOrgOnlyResolvesProjectOrgAndBlocksMismatch(t *testing.T) {
 	resetMCPLockStateForTest()
+	mcpLockStateFilePath = filepath.Join(t.TempDir(), "mcp-lock-state.json")
 	_, err := mcpLock(MCPLockArgs{OrganizationIDs: []int32{10}})
 	if err != nil {
 		t.Fatalf("mcpLock returned error: %v", err)
@@ -266,6 +281,7 @@ func TestEnforceMCPLockOrgOnlyResolvesProjectOrgAndBlocksMismatch(t *testing.T) 
 
 func TestEnforceMCPLockOrgOnlyAllowsResolvedMatch(t *testing.T) {
 	resetMCPLockStateForTest()
+	mcpLockStateFilePath = filepath.Join(t.TempDir(), "mcp-lock-state.json")
 	_, err := mcpLock(MCPLockArgs{OrganizationIDs: []int32{10}})
 	if err != nil {
 		t.Fatalf("mcpLock returned error: %v", err)
@@ -288,5 +304,85 @@ func TestEnforceMCPLockUnrestrictedWhenNoLocksConfigured(t *testing.T) {
 	resetMCPLockStateForTest()
 	if denied := enforceMCPLock("list-servers", ProjectIDArgs{ProjectID: 999}); denied != nil {
 		t.Fatalf("expected unrestricted call to pass when no locks configured, got %+v", denied)
+	}
+}
+
+func TestCreatedProjectIDsExtendEffectiveHardLimit(t *testing.T) {
+	resetMCPLockStateForTest()
+	globalMCPLockState.mu.Lock()
+	hardLimit := newMCPLockScope(nil, []int32{1832}, "hardLimit")
+	globalMCPLockState.hardLimitScope = &hardLimit
+	globalMCPLockState.createdProjectIDs = []int32{3169}
+	globalMCPLockState.mu.Unlock()
+
+	effective, active := getEffectiveMCPLockScope()
+	if !active {
+		t.Fatal("expected active lock scope")
+	}
+	if len(effective.ProjectIDs) != 2 || effective.ProjectIDs[0] != 1832 || effective.ProjectIDs[1] != 3169 {
+		t.Fatalf("expected project union [1832 3169], got %+v", effective.ProjectIDs)
+	}
+}
+
+func TestPersistedCreatedProjectIDsRoundtrip(t *testing.T) {
+	resetMCPLockStateForTest()
+	path := filepath.Join(t.TempDir(), "lock-state.json")
+	mcpLockStateFilePath = path
+	globalMCPLockState.mu.Lock()
+	globalMCPLockState.createdProjectIDs = []int32{4001, 4002}
+	globalMCPLockState.mu.Unlock()
+
+	if err := saveMCPLockState(); err != nil {
+		t.Fatalf("saveMCPLockState error: %v", err)
+	}
+	loaded, err := loadPersistedMCPLockState(path)
+	if err != nil {
+		t.Fatalf("loadPersistedMCPLockState error: %v", err)
+	}
+	if len(loaded.CreatedProjectIDs) != 2 || loaded.CreatedProjectIDs[0] != 4001 || loaded.CreatedProjectIDs[1] != 4002 {
+		t.Fatalf("unexpected persisted created IDs: %+v", loaded.CreatedProjectIDs)
+	}
+}
+
+func TestUpdateCreatedProjectAllowlistFromCreateProjectResponse(t *testing.T) {
+	resetMCPLockStateForTest()
+	mcpLockStateFilePath = filepath.Join(t.TempDir(), "lock-state.json")
+	response := createJSONResponse(map[string]interface{}{
+		"success": true,
+		"id":      "4501",
+	})
+
+	updateCreatedProjectAllowlistAfterTool("create-project", ProjectIDArgs{ProjectID: 1}, response, nil)
+	created := getCreatedProjectIDs()
+	if len(created) != 1 || created[0] != 4501 {
+		t.Fatalf("expected created project [4501], got %+v", created)
+	}
+
+	content, err := os.ReadFile(mcpLockStateFilePath)
+	if err != nil {
+		t.Fatalf("expected persisted state file: %v", err)
+	}
+	var persisted mcpLockPersistedState
+	if err := json.Unmarshal(content, &persisted); err != nil {
+		t.Fatalf("invalid persisted state JSON: %v", err)
+	}
+	if len(persisted.CreatedProjectIDs) != 1 || persisted.CreatedProjectIDs[0] != 4501 {
+		t.Fatalf("unexpected persisted project IDs: %+v", persisted.CreatedProjectIDs)
+	}
+}
+
+func TestUpdateCreatedProjectAllowlistFromCreateVirtualClusterArgs(t *testing.T) {
+	resetMCPLockStateForTest()
+	mcpLockStateFilePath = filepath.Join(t.TempDir(), "lock-state.json")
+	args := struct {
+		ProjectID int32 `json:"projectId"`
+	}{
+		ProjectID: 7777,
+	}
+
+	updateCreatedProjectAllowlistAfterTool("create-virtual-cluster", args, createJSONResponse(SuccessResponse{Success: true, Message: "ok"}), nil)
+	created := getCreatedProjectIDs()
+	if len(created) != 1 || created[0] != 7777 {
+		t.Fatalf("expected created project [7777], got %+v", created)
 	}
 }

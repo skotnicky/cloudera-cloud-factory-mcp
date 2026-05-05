@@ -90,6 +90,7 @@ var toolRequiredScopes = map[string][]string{
 	"wait-for-app":                   {"scope:applications:read"},
 	"list-projects":                  {"scope:projects:read"},
 	"create-project":                 {"scope:projects:write"},
+	"create-cluster":                 {"scope:projects:write", "scope:servers:write", "scope:project-deployments"},
 	"delete-project":                 {"scope:projects:write"},
 	"wait-for-project":               {"scope:projects:read"},
 	"deploy-kubernetes-resources":    {"scope:kubernetes:write"},
@@ -556,7 +557,9 @@ func registerScopedTool[T any](server *mcp_golang.Server, name, description stri
 		if denied := enforceMCPLock(name, args); denied != nil {
 			return denied, nil
 		}
-		return handler(args)
+		response, err := handler(args)
+		updateCreatedProjectAllowlistAfterTool(name, args, response, err)
+		return response, err
 	})
 }
 

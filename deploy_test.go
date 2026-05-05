@@ -561,3 +561,206 @@ func TestCommitProjectWithFallbackSkipsSizingValidationForTrackedVMMode(t *testi
 		t.Fatalf("expected only VM commit endpoint call, got %d calls", callCount.Load())
 	}
 }
+
+func TestResolveCreateClusterProjectArgsRejectsAmbiguousKubernetesProfiles(t *testing.T) {
+	client, _, cleanup := newQueuedResponseClient(t, []queuedHTTPResponse{
+		{statusCode: http.StatusOK, body: `[{"id":1001,"name":"kp-a"},{"id":1002,"name":"kp-b"}]`},
+	})
+	defer cleanup()
+
+	_, errorResp := resolveCreateClusterProjectArgs(client, CreateClusterArgs{
+		Name:              "cluster-a",
+		CloudCredentialID: 300,
+	})
+	if errorResp == nil {
+		t.Fatal("expected ambiguous Kubernetes profile selection error")
+	}
+	payload, ok := parseToolResponsePayload(errorResp)
+	if !ok {
+		t.Fatal("expected JSON error payload")
+	}
+	if !strings.Contains(payload["error"].(string), "Unable to auto-select Kubernetes profile") {
+		t.Fatalf("unexpected error payload: %+v", payload)
+	}
+}
+
+func TestResolveCreateClusterProjectArgsUsesExplicitProfiles(t *testing.T) {
+	projectArgs, errorResp := resolveCreateClusterProjectArgs(nil, CreateClusterArgs{
+		Name:                "cluster-explicit",
+		CloudCredentialID:   301,
+		KubernetesProfileID: 11,
+		AlertingProfileID:   22,
+		Monitoring:          true,
+	})
+	if errorResp != nil {
+		t.Fatalf("did not expect error response, got %+v", errorResp)
+	}
+	if projectArgs.KubernetesProfileID != 11 || projectArgs.AlertingProfileID != 22 {
+		t.Fatalf("expected explicit profile IDs to pass through, got %+v", projectArgs)
+	}
+}
+
+func TestCreateClusterOrchestratesProjectNodesAndCommit(t *testing.T) {
+	originalStatePath := mcpLockStateFilePath
+	mcpLockStateFilePath = ""
+	t.Cleanup(func() { mcpLockStateFilePath = originalStatePath })
+
+	projectID := int32(9001)
+	cloudID := int32(77)
+	clusterName := "e2e-cluster"
+
+	serversBody := mustMarshalJSONForDeploy(t, buildServersListForDetails(projectID, cloudID, false, []taikuncore.ServerListDto{
+		buildServer(taikuncore.CLOUDROLE_BASTION, clusterName+"-bastion", "small"),
+		buildServer(taikuncore.CLOUDROLE_KUBEMASTER, clusterName+"-master", "medium"),
+		buildServer(taikuncore.CLOUDROLE_KUBEWORKER, clusterName+"-worker", "medium"),
+	}))
+	flavorsBody := mustMarshalJSONForDeploy(t, buildAllFlavorsList([]taikuncore.FlavorsListDto{
+		buildFlavor("small", 2, 2),
+		buildFlavor("medium", 4, 4),
+	}))
+
+	client, callCount, cleanup := newQueuedResponseClient(t, []queuedHTTPResponse{
+		{statusCode: http.StatusOK, body: `{"id":"9001"}`}, // create-project
+		{statusCode: http.StatusOK, body: flavorsBody},     // select flavors
+		{statusCode: http.StatusOK, body: `{}`},            // bind flavors to project
+		{statusCode: http.StatusOK, body: `{}`},            // add bastion
+		{statusCode: http.StatusOK, body: serversBody},     // verify bastion
+		{statusCode: http.StatusOK, body: `{}`},            // add master
+		{statusCode: http.StatusOK, body: serversBody},     // verify master
+		{statusCode: http.StatusOK, body: `{}`},            // add worker
+		{statusCode: http.StatusOK, body: serversBody},     // verify worker
+		{statusCode: http.StatusOK, body: serversBody},     // commit preflight servers
+		{statusCode: http.StatusOK, body: flavorsBody},     // commit preflight flavors
+		{statusCode: http.StatusOK, body: `{}`},            // commit
+	})
+	defer cleanup()
+
+	wait := false
+	resp, err := createCluster(client, CreateClusterArgs{
+		Name:                clusterName,
+		CloudCredentialID:   cloudID,
+		KubernetesProfileID: 5001,
+		BastionCount:        1,
+		MasterCount:         1,
+		WorkerCount:         1,
+		WorkerFlavor:        "medium",
+		WaitForCreation:     &wait,
+	})
+	if err != nil {
+		t.Fatalf("createCluster returned error: %v", err)
+	}
+	if !isToolResponseSuccess(resp) {
+		payload, _ := parseToolResponsePayload(resp)
+		t.Fatalf("expected success response, got %+v", payload)
+	}
+	payload, ok := parseToolResponsePayload(resp)
+	if !ok {
+		t.Fatal("expected create-cluster response payload")
+	}
+	if payload["projectId"] == nil {
+		t.Fatalf("expected projectId in response, got %+v", payload)
+	}
+	if *callCount != 12 {
+		t.Fatalf("expected 12 API calls, got %d", *callCount)
+	}
+}
+
+func TestCreateClusterFlavorFailureReportsCreatedProjectContext(t *testing.T) {
+	originalStatePath := mcpLockStateFilePath
+	mcpLockStateFilePath = ""
+	t.Cleanup(func() { mcpLockStateFilePath = originalStatePath })
+
+	projectID := int32(9010)
+	cloudID := int32(77)
+
+	client, callCount, cleanup := newQueuedResponseClient(t, []queuedHTTPResponse{
+		{statusCode: http.StatusOK, body: `{"id":"9010"}`},
+		{statusCode: http.StatusOK, body: `{"data":[],"totalCount":0}`},
+	})
+	defer cleanup()
+
+	wait := false
+	resp, err := createCluster(client, CreateClusterArgs{
+		Name:                "cluster-flavor-failure",
+		CloudCredentialID:   cloudID,
+		KubernetesProfileID: 5001,
+		WaitForCreation:     &wait,
+	})
+	if err != nil {
+		t.Fatalf("createCluster returned error: %v", err)
+	}
+	if isToolResponseSuccess(resp) {
+		payload, _ := parseToolResponsePayload(resp)
+		t.Fatalf("expected failure response, got %+v", payload)
+	}
+
+	payload, ok := parseToolResponsePayload(resp)
+	if !ok {
+		t.Fatal("expected JSON payload in failure response")
+	}
+	if payload["projectId"] != float64(projectID) {
+		t.Fatalf("expected projectId %d in error response, got %+v", projectID, payload["projectId"])
+	}
+	if payload["projectCreated"] != true {
+		t.Fatalf("expected projectCreated=true in error response, got %+v", payload["projectCreated"])
+	}
+	details, _ := payload["details"].(string)
+	if !strings.Contains(details, "already created") {
+		t.Fatalf("expected created-project guidance in details, got %q", details)
+	}
+	if *callCount != 2 {
+		t.Fatalf("expected 2 API calls (create project + flavors), got %d", *callCount)
+	}
+}
+
+func TestResolveCreateClusterFlavorsWorkerUsesCommitMinimumWhenMonitoringDisabled(t *testing.T) {
+	flavorsBody := mustMarshalJSONForDeploy(t, buildAllFlavorsList([]taikuncore.FlavorsListDto{
+		buildFlavor("small", 2, 2),
+		buildFlavor("medium", 4, 4),
+	}))
+	client, _, cleanup := newQueuedResponseClient(t, []queuedHTTPResponse{
+		{statusCode: http.StatusOK, body: flavorsBody},
+	})
+	defer cleanup()
+
+	sel, errResp := resolveCreateClusterFlavors(client, CreateClusterArgs{
+		CloudCredentialID: 1,
+		Monitoring:        false,
+	})
+	if errResp != nil {
+		t.Fatalf("expected flavor resolution to succeed, got %+v", errResp)
+	}
+	if sel.Bastion != "small" || sel.Master != "medium" {
+		t.Fatalf("unexpected bastion/master flavors: bastion=%q master=%q", sel.Bastion, sel.Master)
+	}
+	if sel.Worker != "medium" {
+		t.Fatalf("expected worker flavor to match commit minimum (medium / 4 CPU), got %q", sel.Worker)
+	}
+}
+
+func TestResolveCreateClusterFlavorsFailsWhenWorkerOverrideBelowCommitMinimum(t *testing.T) {
+	flavorsBody := mustMarshalJSONForDeploy(t, buildAllFlavorsList([]taikuncore.FlavorsListDto{
+		buildFlavor("small", 2, 2),
+		buildFlavor("medium", 4, 4),
+	}))
+	client, _, cleanup := newQueuedResponseClient(t, []queuedHTTPResponse{
+		{statusCode: http.StatusOK, body: flavorsBody},
+	})
+	defer cleanup()
+
+	_, errResp := resolveCreateClusterFlavors(client, CreateClusterArgs{
+		CloudCredentialID: 1,
+		Monitoring:        false,
+		WorkerFlavor:      "small",
+	})
+	if errResp == nil {
+		t.Fatal("expected worker flavor override to be rejected when below commit minimum")
+	}
+	payload, ok := parseToolResponsePayload(errResp)
+	if !ok {
+		t.Fatal("expected JSON error payload")
+	}
+	if !strings.Contains(payload["error"].(string), "Unable to determine worker flavor") {
+		t.Fatalf("unexpected error: %+v", payload)
+	}
+}
