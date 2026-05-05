@@ -899,6 +899,18 @@ func listKubeConfigRoles(client *taikungoclient.Client, _ ListKubeConfigRolesArg
 	return createJSONResponse(roleSummaries), nil
 }
 
+func kubernetesListEndpoints(baseURL string, projectID int32, resource string) []string {
+	legacyPath := fmt.Sprintf("%s/api/v1/kubernetes/list/%d/%s", baseURL, projectID, resource)
+	if strings.EqualFold(resource, "pods") {
+		// Pods recently moved to a dedicated endpoint in the upstream API.
+		return []string{
+			fmt.Sprintf("%s/api/v1/kubernetes/%d/pods-list", baseURL, projectID),
+			legacyPath,
+		}
+	}
+	return []string{legacyPath}
+}
+
 func fetchKubernetesListPage[T any](ctx context.Context, client *taikungoclient.Client, projectID int32, resource string, limit int32, cursor string, searchTerm string) (cursorPaginatedResponse[T], *http.Response, error) {
 	var result cursorPaginatedResponse[T]
 
@@ -912,49 +924,71 @@ func fetchKubernetesListPage[T any](ctx context.Context, client *taikungoclient.
 	}
 
 	baseURL := fmt.Sprintf("%s://%s", cfg.Scheme, cfg.Host)
-	endpoint := fmt.Sprintf("%s/api/v1/kubernetes/list/%d/%s", baseURL, projectID, resource)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return result, nil, err
-	}
+	endpoints := kubernetesListEndpoints(baseURL, projectID, resource)
 
-	query := req.URL.Query()
-	if limit > 0 {
-		query.Set("Limit", fmt.Sprintf("%d", limit))
-	}
-	if cursor != "" {
-		query.Set("Cursor", cursor)
-	}
-	if searchTerm != "" {
-		query.Set("SearchTerm", searchTerm)
-	}
-	req.URL.RawQuery = query.Encode()
-	req.Header.Set("Accept", "application/json")
-
-	response, err := cfg.HTTPClient.Do(req)
-	if err != nil {
-		return result, response, err
-	}
-
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return result, response, fmt.Errorf("request failed with status %d", response.StatusCode)
-	}
-
-	defer func() {
-		if err := response.Body.Close(); err != nil {
-			logger.Printf("Failed to close Kubernetes list response body: %v", err)
+	for idx, endpoint := range endpoints {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return result, nil, err
 		}
-	}()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return result, response, err
+
+		query := req.URL.Query()
+		if limit > 0 {
+			query.Set("Limit", fmt.Sprintf("%d", limit))
+		}
+		if cursor != "" {
+			query.Set("Cursor", cursor)
+		}
+		if searchTerm != "" {
+			query.Set("SearchTerm", searchTerm)
+		}
+		req.URL.RawQuery = query.Encode()
+		req.Header.Set("Accept", "application/json")
+
+		response, reqErr := cfg.HTTPClient.Do(req)
+		if reqErr != nil {
+			if response != nil && response.Body != nil {
+				if closeErr := response.Body.Close(); closeErr != nil {
+					logger.Printf("Failed to close Kubernetes list response body after request error: %v", closeErr)
+				}
+			}
+			return result, response, reqErr
+		}
+
+		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+			// If pods return 404 on one API shape, try the compatibility fallback.
+			if idx < len(endpoints)-1 && response.StatusCode == http.StatusNotFound {
+				if closeErr := response.Body.Close(); closeErr != nil {
+					logger.Printf("Failed to close fallback Kubernetes list response body: %v", closeErr)
+				}
+				continue
+			}
+			if response.Body != nil {
+				if closeErr := response.Body.Close(); closeErr != nil {
+					logger.Printf("Failed to close Kubernetes list response body on error response: %v", closeErr)
+				}
+			}
+			return result, response, fmt.Errorf("request failed with status %d", response.StatusCode)
+		}
+
+		defer func() {
+			if err := response.Body.Close(); err != nil {
+				logger.Printf("Failed to close Kubernetes list response body: %v", err)
+			}
+		}()
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			return result, response, err
+		}
+
+		if err := json.Unmarshal(body, &result); err != nil {
+			return result, response, err
+		}
+
+		return result, response, nil
 	}
 
-	if err := json.Unmarshal(body, &result); err != nil {
-		return result, response, err
-	}
-
-	return result, response, nil
+	return result, nil, fmt.Errorf("failed to query Kubernetes list endpoint")
 }
 
 func fetchKubernetesListItems[T any](ctx context.Context, client *taikungoclient.Client, projectID int32, resource string, limit int32, offset int32, searchTerm string) ([]T, *http.Response, error) {

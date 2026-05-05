@@ -139,3 +139,26 @@ func TestListKubernetesResourcesInvalidKindIncludesAllowedKinds(t *testing.T) {
 		t.Fatalf("expected allowed list kinds in details, got %+v", result)
 	}
 }
+
+func TestKubernetesListEndpointsUsesPodsCompatibilityPaths(t *testing.T) {
+	endpoints := kubernetesListEndpoints("https://api.example.com", 1832, "pods")
+	if len(endpoints) != 2 {
+		t.Fatalf("expected two pods endpoints for compatibility fallback, got %d (%v)", len(endpoints), endpoints)
+	}
+	if endpoints[0] != "https://api.example.com/api/v1/kubernetes/1832/pods-list" {
+		t.Fatalf("expected pods-list endpoint first, got %q", endpoints[0])
+	}
+	if endpoints[1] != "https://api.example.com/api/v1/kubernetes/list/1832/pods" {
+		t.Fatalf("expected legacy pods list endpoint second, got %q", endpoints[1])
+	}
+}
+
+func TestKubernetesListEndpointsKeepsLegacyPathForNonPods(t *testing.T) {
+	endpoints := kubernetesListEndpoints("https://api.example.com", 77, "service")
+	if len(endpoints) != 1 {
+		t.Fatalf("expected one endpoint for non-pods resources, got %d (%v)", len(endpoints), endpoints)
+	}
+	if endpoints[0] != "https://api.example.com/api/v1/kubernetes/list/77/service" {
+		t.Fatalf("expected legacy non-pods endpoint, got %q", endpoints[0])
+	}
+}
