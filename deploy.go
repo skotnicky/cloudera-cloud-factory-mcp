@@ -825,31 +825,6 @@ func validateProjectSizingForCommit(client *taikungoclient.Client, projectID int
 		}
 	}
 
-	flavorsResult, flavorsResponse, err := client.Client.CloudCredentialAPI.CloudcredentialsAllFlavors(ctx, cloudID).Execute()
-	if err != nil {
-		errorInfo := apiErrorInfoFromResponse(flavorsResponse, err)
-		return &errorInfo
-	}
-	if flavorsResponse == nil || flavorsResponse.StatusCode < http.StatusOK || flavorsResponse.StatusCode >= http.StatusMultipleChoices {
-		errorInfo := apiErrorInfoFromResponse(flavorsResponse, fmt.Errorf("failed to load flavors for cloud credential %d while validating project %d", cloudID, projectID))
-		return &errorInfo
-	}
-
-	flavorByName := map[string]FlavorSummary{}
-	if flavorsResult != nil {
-		for _, flavor := range flavorsResult.GetData() {
-			name := strings.ToLower(strings.TrimSpace(flavor.GetName()))
-			if name == "" {
-				continue
-			}
-			flavorByName[name] = FlavorSummary{
-				Name: flavor.GetName(),
-				CPU:  flavor.GetCpu(),
-				RAM:  flavor.GetRam(),
-			}
-		}
-	}
-
 	workerCount := 0
 	qualifyingWorkerCount := 0
 	for _, server := range serversResult.GetData() {
@@ -860,8 +835,33 @@ func validateProjectSizingForCommit(client *taikungoclient.Client, projectID int
 
 		flavorName := strings.TrimSpace(server.GetFlavor())
 		normalizedFlavorName := strings.ToLower(flavorName)
-		flavor, ok := flavorByName[normalizedFlavorName]
-		if !ok {
+
+		flavorsResult, flavorsResponse, err := client.Client.CloudCredentialAPI.CloudcredentialsAllFlavors(ctx, cloudID).Search(flavorName).Execute()
+		if err != nil {
+			errorInfo := apiErrorInfoFromResponse(flavorsResponse, err)
+			return &errorInfo
+		}
+		if flavorsResponse == nil || flavorsResponse.StatusCode < http.StatusOK || flavorsResponse.StatusCode >= http.StatusMultipleChoices {
+			errorInfo := apiErrorInfoFromResponse(flavorsResponse, fmt.Errorf("failed to load flavors for cloud credential %d while validating project %d", cloudID, projectID))
+			return &errorInfo
+		}
+
+		var flavor FlavorSummary
+		found := false
+		if flavorsResult != nil {
+			for _, f := range flavorsResult.GetData() {
+				if strings.ToLower(strings.TrimSpace(f.GetName())) == normalizedFlavorName {
+					flavor = FlavorSummary{
+						Name: f.GetName(),
+						CPU:  f.GetCpu(),
+						RAM:  f.GetRam(),
+					}
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
 			return &apiErrorInfo{
 				Message: fmt.Sprintf("Cannot validate sizing for server %q (%s) because flavor %q is missing from cloud credential %d metadata", server.GetName(), server.GetRole(), flavorName, cloudID),
 			}
