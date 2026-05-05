@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/itera-io/taikungoclient"
@@ -235,11 +236,11 @@ func TestCommitProjectWithFallbackPreservesReactiveFallbackInTrackedProjectMode(
 		buildFlavor("m4", 4, 4),
 	}))
 
-	callCount := 0
+	var callCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
+		n := int(callCount.Add(1))
 		w.Header().Set("Content-Type", "application/json")
-		switch callCount {
+		switch n {
 		case 1:
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(serversBody))
@@ -253,7 +254,8 @@ func TestCommitProjectWithFallbackPreservesReactiveFallbackInTrackedProjectMode(
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{}`))
 		default:
-			t.Fatalf("unexpected extra request %d to %s", callCount, r.URL.Path)
+			t.Errorf("unexpected extra request %d to %s", n, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
 		}
 	}))
 	defer server.Close()
@@ -272,8 +274,8 @@ func TestCommitProjectWithFallbackPreservesReactiveFallbackInTrackedProjectMode(
 	if result.Mode != "vm" {
 		t.Fatalf("expected VM commit result after fallback, got %q", result.Mode)
 	}
-	if callCount != 4 {
-		t.Fatalf("expected preflight, commit, and VM fallback calls, got %d request(s)", callCount)
+	if callCount.Load() != 4 {
+		t.Fatalf("expected preflight, commit, and VM fallback calls, got %d request(s)", callCount.Load())
 	}
 	if got := pendingProjectCommitMode(projectID); got != projectCommitModeAuto {
 		t.Fatalf("expected pending state to clear after successful fallback, got %q", got)
@@ -285,17 +287,19 @@ type queuedHTTPResponse struct {
 	body       string
 }
 
-func newQueuedResponseClient(t *testing.T, responses []queuedHTTPResponse) (*taikungoclient.Client, *int, func()) {
+func newQueuedResponseClient(t *testing.T, responses []queuedHTTPResponse) (*taikungoclient.Client, *atomic.Int32, func()) {
 	t.Helper()
 
-	callCount := 0
+	var callCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if callCount >= len(responses) {
-			t.Fatalf("unexpected request %d to %s", callCount+1, r.URL.Path)
+		idx := int(callCount.Add(1)) - 1
+		if idx >= len(responses) {
+			t.Errorf("unexpected request %d to %s", idx+1, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 
-		next := responses[callCount]
-		callCount++
+		next := responses[idx]
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(next.statusCode)
 		_, _ = w.Write([]byte(next.body))
@@ -481,9 +485,9 @@ func TestValidateProjectSizingForCommit(t *testing.T) {
 				}
 			}
 
-			wantCalls := 1 + len(testCase.flavorResponses)
-			if *callCount != wantCalls {
-				t.Fatalf("expected %d preflight calls, got %d", wantCalls, *callCount)
+			wantCalls := int32(1 + len(testCase.flavorResponses))
+			if callCount.Load() != wantCalls {
+				t.Fatalf("expected %d preflight calls, got %d", wantCalls, callCount.Load())
 			}
 		})
 	}
@@ -513,8 +517,8 @@ func TestCommitProjectWithFallbackFailsBeforeCommitWhenSizingValidationFails(t *
 	if !strings.Contains(errInfo.Message, "every Kubemaster") {
 		t.Fatalf("expected Kubemaster sizing error, got %q", errInfo.Message)
 	}
-	if *callCount != 2 {
-		t.Fatalf("expected only preflight calls before failure, got %d", *callCount)
+	if callCount.Load() != 2 {
+		t.Fatalf("expected only preflight calls before failure, got %d", callCount.Load())
 	}
 }
 
@@ -524,11 +528,13 @@ func TestCommitProjectWithFallbackSkipsSizingValidationForTrackedVMMode(t *testi
 	projectID := int32(502)
 	recordPendingStandaloneVMCreate(projectID)
 
-	callCount := 0
+	var callCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
+		callCount.Add(1)
 		if strings.Contains(r.URL.Path, "/servers/") {
-			t.Fatalf("unexpected sizing validation call in VM mode: %s", r.URL.Path)
+			t.Errorf("unexpected sizing validation call in VM mode: %s", r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -551,7 +557,7 @@ func TestCommitProjectWithFallbackSkipsSizingValidationForTrackedVMMode(t *testi
 	if result.Mode != "vm" {
 		t.Fatalf("expected vm commit mode, got %q", result.Mode)
 	}
-	if callCount != 1 {
-		t.Fatalf("expected only VM commit endpoint call, got %d calls", callCount)
+	if callCount.Load() != 1 {
+		t.Fatalf("expected only VM commit endpoint call, got %d calls", callCount.Load())
 	}
 }
