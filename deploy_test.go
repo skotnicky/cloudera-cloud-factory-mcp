@@ -374,7 +374,8 @@ func TestValidateProjectSizingForCommit(t *testing.T) {
 		name            string
 		monitoring      bool
 		servers         []taikuncore.ServerListDto
-		flavors         []taikuncore.FlavorsListDto
+		// one entry per kubemaster/kubeworker in servers order; each entry is the flavors the search returns
+		flavorResponses [][]taikuncore.FlavorsListDto
 		wantErrContains string
 	}{
 		{
@@ -383,8 +384,8 @@ func TestValidateProjectSizingForCommit(t *testing.T) {
 			servers: []taikuncore.ServerListDto{
 				buildServer(taikuncore.CLOUDROLE_KUBEMASTER, "master-1", "m4"),
 			},
-			flavors: []taikuncore.FlavorsListDto{
-				buildFlavor("m4", 4, 4),
+			flavorResponses: [][]taikuncore.FlavorsListDto{
+				{buildFlavor("m4", 4, 4)},
 			},
 		},
 		{
@@ -393,8 +394,8 @@ func TestValidateProjectSizingForCommit(t *testing.T) {
 			servers: []taikuncore.ServerListDto{
 				buildServer(taikuncore.CLOUDROLE_KUBEMASTER, "master-small", "m2"),
 			},
-			flavors: []taikuncore.FlavorsListDto{
-				buildFlavor("m2", 2, 2),
+			flavorResponses: [][]taikuncore.FlavorsListDto{
+				{buildFlavor("m2", 2, 2)},
 			},
 			wantErrContains: "every Kubemaster",
 		},
@@ -404,8 +405,8 @@ func TestValidateProjectSizingForCommit(t *testing.T) {
 			servers: []taikuncore.ServerListDto{
 				buildServer(taikuncore.CLOUDROLE_KUBEMASTER, "master-1", "m4"),
 			},
-			flavors: []taikuncore.FlavorsListDto{
-				buildFlavor("m4", 4, 4),
+			flavorResponses: [][]taikuncore.FlavorsListDto{
+				{buildFlavor("m4", 4, 4)},
 			},
 		},
 		{
@@ -415,9 +416,9 @@ func TestValidateProjectSizingForCommit(t *testing.T) {
 				buildServer(taikuncore.CLOUDROLE_KUBEMASTER, "master-1", "m4"),
 				buildServer(taikuncore.CLOUDROLE_KUBEWORKER, "worker-1", "w4"),
 			},
-			flavors: []taikuncore.FlavorsListDto{
-				buildFlavor("m4", 4, 4),
-				buildFlavor("w4", 4, 4),
+			flavorResponses: [][]taikuncore.FlavorsListDto{
+				{buildFlavor("m4", 4, 4)},
+				{buildFlavor("w4", 4, 4)},
 			},
 		},
 		{
@@ -427,9 +428,9 @@ func TestValidateProjectSizingForCommit(t *testing.T) {
 				buildServer(taikuncore.CLOUDROLE_KUBEMASTER, "master-1", "m4"),
 				buildServer(taikuncore.CLOUDROLE_KUBEWORKER, "worker-small", "w2"),
 			},
-			flavors: []taikuncore.FlavorsListDto{
-				buildFlavor("m4", 4, 4),
-				buildFlavor("w2", 2, 2),
+			flavorResponses: [][]taikuncore.FlavorsListDto{
+				{buildFlavor("m4", 4, 4)},
+				{buildFlavor("w2", 2, 2)},
 			},
 			wantErrContains: "at least one Kubeworker",
 		},
@@ -440,8 +441,9 @@ func TestValidateProjectSizingForCommit(t *testing.T) {
 				buildServer(taikuncore.CLOUDROLE_KUBEMASTER, "master-1", "m4"),
 				buildServer(taikuncore.CLOUDROLE_KUBEWORKER, "worker-unknown", "unknown"),
 			},
-			flavors: []taikuncore.FlavorsListDto{
-				buildFlavor("m4", 4, 4),
+			flavorResponses: [][]taikuncore.FlavorsListDto{
+				{buildFlavor("m4", 4, 4)},
+				{}, // search for "unknown" returns no results
 			},
 			wantErrContains: "missing from cloud credential",
 		},
@@ -450,12 +452,18 @@ func TestValidateProjectSizingForCommit(t *testing.T) {
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			serversBody := mustMarshalJSONForDeploy(t, buildServersListForDetails(projectID, cloudID, testCase.monitoring, testCase.servers))
-			flavorsBody := mustMarshalJSONForDeploy(t, buildAllFlavorsList(testCase.flavors))
 
-			client, callCount, cleanup := newQueuedResponseClient(t, []queuedHTTPResponse{
+			queued := []queuedHTTPResponse{
 				{statusCode: http.StatusOK, body: serversBody},
-				{statusCode: http.StatusOK, body: flavorsBody},
-			})
+			}
+			for _, flavorSet := range testCase.flavorResponses {
+				queued = append(queued, queuedHTTPResponse{
+					statusCode: http.StatusOK,
+					body:       mustMarshalJSONForDeploy(t, buildAllFlavorsList(flavorSet)),
+				})
+			}
+
+			client, callCount, cleanup := newQueuedResponseClient(t, queued)
 			defer cleanup()
 
 			errInfo := validateProjectSizingForCommit(client, projectID)
@@ -473,8 +481,9 @@ func TestValidateProjectSizingForCommit(t *testing.T) {
 				}
 			}
 
-			if *callCount != 2 {
-				t.Fatalf("expected two preflight calls, got %d", *callCount)
+			wantCalls := 1 + len(testCase.flavorResponses)
+			if *callCount != wantCalls {
+				t.Fatalf("expected %d preflight calls, got %d", wantCalls, *callCount)
 			}
 		})
 	}
