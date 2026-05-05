@@ -630,7 +630,8 @@ func TestCreateClusterOrchestratesProjectNodesAndCommit(t *testing.T) {
 		{statusCode: http.StatusOK, body: `{}`},            // add worker
 		{statusCode: http.StatusOK, body: serversBody},     // verify worker
 		{statusCode: http.StatusOK, body: serversBody},     // commit preflight servers
-		{statusCode: http.StatusOK, body: flavorsBody},     // commit preflight flavors
+		{statusCode: http.StatusOK, body: flavorsBody},     // commit preflight flavors (master)
+		{statusCode: http.StatusOK, body: flavorsBody},     // commit preflight flavors (worker)
 		{statusCode: http.StatusOK, body: `{}`},            // commit
 	})
 	defer cleanup()
@@ -660,8 +661,8 @@ func TestCreateClusterOrchestratesProjectNodesAndCommit(t *testing.T) {
 	if payload["projectId"] == nil {
 		t.Fatalf("expected projectId in response, got %+v", payload)
 	}
-	if *callCount != 12 {
-		t.Fatalf("expected 12 API calls, got %d", *callCount)
+	if callCount.Load() != 13 {
+		t.Fatalf("expected 13 API calls, got %d", callCount.Load())
 	}
 }
 
@@ -708,8 +709,8 @@ func TestCreateClusterFlavorFailureReportsCreatedProjectContext(t *testing.T) {
 	if !strings.Contains(details, "already created") {
 		t.Fatalf("expected created-project guidance in details, got %q", details)
 	}
-	if *callCount != 2 {
-		t.Fatalf("expected 2 API calls (create project + flavors), got %d", *callCount)
+	if callCount.Load() != 2 {
+		t.Fatalf("expected 2 API calls (create project + flavors), got %d", callCount.Load())
 	}
 }
 
