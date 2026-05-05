@@ -39,7 +39,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.4.0
+          version: v2.12.1
           args: --timeout=5m
       
       - name: Build
