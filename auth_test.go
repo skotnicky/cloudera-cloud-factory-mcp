@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/itera-io/taikungoclient"
 	taikuncore "github.com/itera-io/taikungoclient/client"
 )
 
@@ -140,7 +145,7 @@ func TestAuthorizeToolDeniesScopedToolWhenScopeDiscoveryFails(t *testing.T) {
 		setRobotUserContext(RobotUserContext{})
 	})
 
-	denied := authorizeTool("create-project")
+	denied := authorizeTool(context.Background(), "create-project")
 	if denied == nil {
 		t.Fatal("expected scoped tool to be denied when scope discovery fails")
 	}
@@ -152,7 +157,7 @@ func TestAuthorizeToolAllowsNoScopeToolWhenScopeDiscoveryFails(t *testing.T) {
 		setRobotUserContext(RobotUserContext{})
 	})
 
-	denied := authorizeTool("robot-user-capabilities")
+	denied := authorizeTool(context.Background(), "robot-user-capabilities")
 	if denied != nil {
 		t.Fatal("expected no-scope tool to remain allowed when scope discovery fails")
 	}
@@ -181,5 +186,242 @@ func TestNewRefreshTaikunClientResponseFailsWhenScopeDiscoveryFails(t *testing.T
 	}
 	if resp.ScopeDiscoveryError == "" {
 		t.Fatalf("expected scope discovery error to be preserved, got %+v", resp)
+	}
+}
+
+// ---- parseRobotUserContext ----
+
+func TestParseRobotUserContextParsesScopes(t *testing.T) {
+	body := []byte(`{"accessKey":"ak","name":"bot","scopes":["scope:projects:read","scope:projects:write"],"isActive":true}`)
+	ctx, err := parseRobotUserContext(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ctx.Scopes) != 2 {
+		t.Fatalf("expected 2 scopes, got %v", ctx.Scopes)
+	}
+	if ctx.AccessKey != "ak" || ctx.Name != "bot" {
+		t.Fatalf("unexpected fields: %+v", ctx)
+	}
+}
+
+func TestParseRobotUserContextRejectsEmptyBody(t *testing.T) {
+	_, err := parseRobotUserContext(nil)
+	if err == nil {
+		t.Fatal("expected error for empty body")
+	}
+}
+
+func TestParseRobotUserContextRejectsMissingMetadata(t *testing.T) {
+	_, err := parseRobotUserContext([]byte(`{"scopes":["scope:x"]}`))
+	if err == nil {
+		t.Fatal("expected error when accessKey and name are absent")
+	}
+}
+
+func TestParseRobotUserContextScopesAreSorted(t *testing.T) {
+	body := []byte(`{"accessKey":"ak","name":"bot","scopes":["scope:z","scope:a","scope:m"]}`)
+	ctx, err := parseRobotUserContext(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for i := 1; i < len(ctx.Scopes); i++ {
+		if ctx.Scopes[i] < ctx.Scopes[i-1] {
+			t.Fatalf("expected sorted scopes, got %v", ctx.Scopes)
+		}
+	}
+}
+
+// ---- resolveRobotUserContext ----
+
+func newRobotAPITestServer(t *testing.T, scopes []string) (*httptest.Server, *taikungoclient.Client) {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/robot/details" {
+			payload := map[string]interface{}{
+				"accessKey": "test-key",
+				"name":      "test-robot",
+				"scopes":    scopes,
+				"isActive":  true,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(payload)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(ts.Close)
+
+	cfg := taikuncore.NewConfiguration()
+	cfg.Scheme = "http"
+	cfg.Host = strings.TrimPrefix(ts.URL, "http://")
+	client := &taikungoclient.Client{Client: taikuncore.NewAPIClient(cfg)}
+	return ts, client
+}
+
+func TestResolveRobotUserContextFallsBackToGlobalWhenNoPerRequestClient(t *testing.T) {
+	setRobotUserContext(RobotUserContext{Scopes: []string{"scope:projects:read"}, Name: "global-robot"})
+	t.Cleanup(func() { setRobotUserContext(RobotUserContext{}) })
+
+	prev := taikunClient
+	taikunClient = nil
+	defer func() { taikunClient = prev }()
+
+	robotCtx := resolveRobotUserContext(context.Background())
+	if robotCtx.Name != "global-robot" {
+		t.Fatalf("expected global context, got %+v", robotCtx)
+	}
+}
+
+func TestResolveRobotUserContextFetchesFromPerRequestClient(t *testing.T) {
+	_, client := newRobotAPITestServer(t, []string{"scope:projects:read", "scope:projects:write"})
+
+	prev := taikunClient
+	taikunClient = nil
+	defer func() { taikunClient = prev }()
+
+	ctx := contextWithClient(context.Background(), client)
+	robotCtx := resolveRobotUserContext(ctx)
+	if len(robotCtx.Scopes) != 2 {
+		t.Fatalf("expected 2 scopes from per-request fetch, got %v", robotCtx.Scopes)
+	}
+}
+
+func TestResolveRobotUserContextHandlesFetchError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}))
+	t.Cleanup(ts.Close)
+	client := taikungoclient.NewClientFromAccessKey("", "k", "s", ts.URL)
+
+	prev := taikunClient
+	taikunClient = nil
+	defer func() { taikunClient = prev }()
+
+	ctx := contextWithClient(context.Background(), client)
+	robotCtx := resolveRobotUserContext(ctx)
+	if robotCtx.ScopeDiscoveryError == "" {
+		t.Fatal("expected ScopeDiscoveryError to be set when fetch fails")
+	}
+}
+
+// ---- authorizeTool with per-request client ----
+
+func TestAuthorizeToolAllowsToolWhenPerRequestClientHasRequiredScope(t *testing.T) {
+	_, client := newRobotAPITestServer(t, []string{"scope:projects:read"})
+
+	prev := taikunClient
+	taikunClient = nil
+	defer func() { taikunClient = prev }()
+
+	ctx := contextWithClient(context.Background(), client)
+	denied := authorizeTool(ctx, "list-projects")
+	if denied != nil {
+		t.Fatalf("expected tool to be allowed, got denial: %v", denied)
+	}
+}
+
+func TestAuthorizeToolBlocksToolWhenPerRequestClientLacksScope(t *testing.T) {
+	_, client := newRobotAPITestServer(t, []string{"scope:applications:read"})
+
+	prev := taikunClient
+	taikunClient = nil
+	defer func() { taikunClient = prev }()
+
+	ctx := contextWithClient(context.Background(), client)
+	denied := authorizeTool(ctx, "list-projects")
+	if denied == nil {
+		t.Fatal("expected tool to be blocked when required scope is missing")
+	}
+}
+
+func TestAuthorizeToolAllowsScopeToolWhenGlobalHasScope(t *testing.T) {
+	setRobotUserContext(RobotUserContext{Scopes: []string{"scope:projects:read"}})
+	t.Cleanup(func() { setRobotUserContext(RobotUserContext{}) })
+
+	denied := authorizeTool(context.Background(), "list-projects")
+	if denied != nil {
+		t.Fatalf("expected tool to be allowed via global context, got denial")
+	}
+}
+
+func TestAuthorizeToolBlocksScopeToolWhenGlobalLacksScope(t *testing.T) {
+	setRobotUserContext(RobotUserContext{Scopes: []string{}})
+	t.Cleanup(func() { setRobotUserContext(RobotUserContext{}) })
+
+	denied := authorizeTool(context.Background(), "list-projects")
+	if denied == nil {
+		t.Fatal("expected tool to be blocked when global context has no scopes")
+	}
+}
+
+func TestAuthorizeToolBlocksUnknownTool(t *testing.T) {
+	denied := authorizeTool(context.Background(), "not-a-real-tool")
+	if denied == nil {
+		t.Fatal("expected denial for tool with no scope mapping")
+	}
+}
+
+// ---- scopeDeniedResponseWithCtx error message ----
+
+func TestScopeDeniedResponseWithCtxIncludesAssignedScopes(t *testing.T) {
+	access := ToolScopeAccess{
+		Tool:           "list-projects",
+		Status:         "blocked",
+		RequiredScopes: []string{"scope:projects:read"},
+		MissingScopes:  []string{"scope:projects:read"},
+	}
+	robotCtx := RobotUserContext{Scopes: []string{"scope:applications:read"}}
+	resp := scopeDeniedResponseWithCtx("list-projects", access, robotCtx)
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	text := resp.Content[0].TextContent.Text
+	if !strings.Contains(text, "scope:applications:read") {
+		t.Errorf("expected assigned scopes in error details, got: %s", text)
+	}
+	if !strings.Contains(text, "scope:projects:read") {
+		t.Errorf("expected required scope in error details, got: %s", text)
+	}
+}
+
+func TestScopeDeniedResponseWithCtxIncludesScopeDiscoveryWarning(t *testing.T) {
+	access := ToolScopeAccess{
+		Tool:           "list-projects",
+		Status:         "blocked",
+		RequiredScopes: []string{"scope:projects:read"},
+		MissingScopes:  []string{"scope:projects:read"},
+	}
+	robotCtx := RobotUserContext{ScopeDiscoveryError: "timeout reaching API"}
+	resp := scopeDeniedResponseWithCtx("list-projects", access, robotCtx)
+	text := resp.Content[0].TextContent.Text
+	if !strings.Contains(text, "timeout reaching API") {
+		t.Errorf("expected scope discovery warning in error details, got: %s", text)
+	}
+}
+
+// ---- buildCapabilitiesResponse ----
+
+func TestBuildCapabilitiesResponseListsAllMappedTools(t *testing.T) {
+	robotCtx := RobotUserContext{Scopes: []string{"scope:projects:read"}}
+	resp := buildCapabilitiesResponse(robotCtx)
+	if len(resp.ToolAccess) != len(toolRequiredScopes) {
+		t.Fatalf("expected %d tools, got %d", len(toolRequiredScopes), len(resp.ToolAccess))
+	}
+}
+
+func TestBuildCapabilitiesResponseSuccessFlag(t *testing.T) {
+	robotCtx := RobotUserContext{Name: "bot", Scopes: []string{}}
+	resp := buildCapabilitiesResponse(robotCtx)
+	if !resp.Success {
+		t.Fatal("expected Success=true when no ScopeDiscoveryError")
+	}
+}
+
+func TestBuildCapabilitiesResponseFailFlagOnDiscoveryError(t *testing.T) {
+	robotCtx := RobotUserContext{ScopeDiscoveryError: "unreachable"}
+	resp := buildCapabilitiesResponse(robotCtx)
+	if resp.Success {
+		t.Fatal("expected Success=false when ScopeDiscoveryError is set")
 	}
 }
