@@ -470,9 +470,7 @@ func evaluateToolScopeAccess(toolName string, assignedScopes []string) ToolScope
 	}
 }
 
-func currentRobotUserCapabilities() RobotUserCapabilitiesResponse {
-	ctx := getRobotUserContext()
-
+func buildCapabilitiesResponse(robotCtx RobotUserContext) RobotUserCapabilitiesResponse {
 	toolNames := make([]string, 0, len(toolRequiredScopes))
 	for toolName := range toolRequiredScopes {
 		toolNames = append(toolNames, toolName)
@@ -481,38 +479,41 @@ func currentRobotUserCapabilities() RobotUserCapabilitiesResponse {
 
 	toolAccess := make([]ToolScopeAccess, 0, len(toolNames))
 	for _, toolName := range toolNames {
-		toolAccess = append(toolAccess, evaluateToolScopeAccess(toolName, ctx.Scopes))
+		toolAccess = append(toolAccess, evaluateToolScopeAccess(toolName, robotCtx.Scopes))
 	}
 
 	message := fmt.Sprintf("Loaded Robot User capabilities for %d scoped tool(s)", len(toolAccess))
-	if ctx.ScopeDiscoveryError != "" {
+	if robotCtx.ScopeDiscoveryError != "" {
 		message = "Robot User scope discovery failed"
 	}
 
 	return RobotUserCapabilitiesResponse{
-		RobotUser:  ctx,
+		RobotUser:  robotCtx,
 		ToolAccess: toolAccess,
-		Success:    ctx.ScopeDiscoveryError == "",
+		Success:    robotCtx.ScopeDiscoveryError == "",
 		Message:    message,
 	}
+}
+
+func currentRobotUserCapabilities() RobotUserCapabilitiesResponse {
+	return buildCapabilitiesResponse(getRobotUserContext())
 }
 
 func getRobotUserCapabilities() *mcp_golang.ToolResponse {
 	return createJSONResponse(currentRobotUserCapabilities())
 }
 
-func scopeDeniedResponse(toolName string, access ToolScopeAccess) *mcp_golang.ToolResponse {
+func scopeDeniedResponseWithCtx(toolName string, access ToolScopeAccess, robotCtx RobotUserContext) *mcp_golang.ToolResponse {
 	details := fmt.Sprintf("Required scopes: %s. Missing scopes: %s.",
 		strings.Join(access.RequiredScopes, ", "),
 		strings.Join(access.MissingScopes, ", "),
 	)
 
-	ctx := getRobotUserContext()
-	if len(ctx.Scopes) > 0 {
-		details += fmt.Sprintf(" Assigned scopes: %s.", strings.Join(ctx.Scopes, ", "))
+	if len(robotCtx.Scopes) > 0 {
+		details += fmt.Sprintf(" Assigned scopes: %s.", strings.Join(robotCtx.Scopes, ", "))
 	}
-	if ctx.ScopeDiscoveryError != "" {
-		details += fmt.Sprintf(" Scope discovery warning: %s.", ctx.ScopeDiscoveryError)
+	if robotCtx.ScopeDiscoveryError != "" {
+		details += fmt.Sprintf(" Scope discovery warning: %s.", robotCtx.ScopeDiscoveryError)
 	}
 
 	return createJSONResponse(ErrorResponse{
@@ -521,49 +522,61 @@ func scopeDeniedResponse(toolName string, access ToolScopeAccess) *mcp_golang.To
 	})
 }
 
-func authorizeTool(toolName string) *mcp_golang.ToolResponse {
-	ctx := getRobotUserContext()
-	access := evaluateToolScopeAccess(toolName, ctx.Scopes)
+func resolveRobotUserContext(reqCtx context.Context) RobotUserContext {
+	client := clientFromContext(reqCtx)
+	if client != nil && client != taikunClient {
+		fetched, err := fetchRobotUserContext(client)
+		if err != nil {
+			return RobotUserContext{ScopeDiscoveryError: err.Error()}
+		}
+		return fetched
+	}
+	return getRobotUserContext()
+}
+
+func authorizeTool(reqCtx context.Context, toolName string) *mcp_golang.ToolResponse {
+	robotCtx := resolveRobotUserContext(reqCtx)
+	access := evaluateToolScopeAccess(toolName, robotCtx.Scopes)
 	if access.Status == "unknown" {
 		return createJSONResponse(ErrorResponse{
 			Error:   fmt.Sprintf("Robot User authorization is not configured for tool %q", toolName),
 			Details: "This tool is registered for scope-aware authorization, but no scope mapping is defined for it.",
 		})
 	}
-	if ctx.ScopeDiscoveryError != "" {
+	if robotCtx.ScopeDiscoveryError != "" {
 		if len(access.RequiredScopes) == 0 {
 			return nil
 		}
 		return createJSONResponse(ErrorResponse{
 			Error:   fmt.Sprintf("Cannot authorize tool %q because Robot User scope discovery failed", toolName),
-			Details: ctx.ScopeDiscoveryError,
+			Details: robotCtx.ScopeDiscoveryError,
 		})
 	}
 	if access.Status == "blocked" {
-		return scopeDeniedResponse(toolName, access)
+		return scopeDeniedResponseWithCtx(toolName, access, robotCtx)
 	}
 	return nil
 }
 
-func registerScopedTool[T any](server *mcp_golang.Server, name, description string, handler func(args T) (*mcp_golang.ToolResponse, error)) error {
+func registerScopedTool[T any](server *mcp_golang.Server, name, description string, handler func(ctx context.Context, args T) (*mcp_golang.ToolResponse, error)) error {
 	if _, ok := toolRequiredScopes[name]; !ok {
 		return fmt.Errorf("missing scope mapping for scoped tool %q", name)
 	}
 
-	return server.RegisterTool(name, description, func(args T) (*mcp_golang.ToolResponse, error) {
-		if denied := authorizeTool(name); denied != nil {
+	return server.RegisterTool(name, description, func(ctx context.Context, args T) (*mcp_golang.ToolResponse, error) {
+		if denied := authorizeTool(ctx, name); denied != nil {
 			return denied, nil
 		}
 		if denied := enforceMCPLock(name, args); denied != nil {
 			return denied, nil
 		}
-		response, err := handler(args)
+		response, err := handler(ctx, args)
 		updateCreatedProjectAllowlistAfterTool(name, args, response, err)
 		return response, err
 	})
 }
 
-func mustRegisterScopedTool[T any](server *mcp_golang.Server, name, description string, handler func(args T) (*mcp_golang.ToolResponse, error)) {
+func mustRegisterScopedTool[T any](server *mcp_golang.Server, name, description string, handler func(ctx context.Context, args T) (*mcp_golang.ToolResponse, error)) {
 	if err := registerScopedTool(server, name, description, handler); err != nil {
 		logger.Fatalf("Failed to register %s tool: %v", name, err)
 	}

@@ -131,11 +131,65 @@ Lock precedence and runtime behavior:
 
 ### Start the server
 
+**stdio transport** (default — for Claude Desktop, Claude Code, and other stdio-based clients):
+
 ```bash
 ./cloudera-cloud-factory-mcp
 ```
 
-The server communicates over MCP stdio transport.
+**HTTP transport** (for network-accessible deployments):
+
+```bash
+./cloudera-cloud-factory-mcp --transport http --addr :8080 --endpoint /mcp
+```
+
+On startup the server prints the listening URLs to stderr:
+
+```
+MCP HTTP server listening — endpoint: http://localhost:8080/mcp  health: http://localhost:8080/health
+```
+
+#### HTTP transport flags
+
+| Flag | Default | Description |
+|-------------|---------|----------------------------------------------|
+| `--transport` | `stdio` | Transport type: `stdio` or `http` |
+| `--addr` | `:8080` | Listen address |
+| `--endpoint` | `/mcp` | HTTP path for the MCP handler |
+
+### Authentication in HTTP transport mode
+
+In HTTP transport mode credentials are **not** loaded from environment variables. Instead, each request must supply them as HTTP headers:
+
+| Header | Description |
+|-------------------|-------------------------------------------|
+| `X-CCF-Access-Key` | Robot User access key |
+| `X-CCF-Secret-Key` | Robot User secret key |
+| `X-CCF-Api-Host` | API host (optional, overrides the default) |
+
+Example:
+
+```bash
+curl -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -H "X-CCF-Access-Key: your-access-key" \
+  -H "X-CCF-Secret-Key: your-secret-key" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list-projects","arguments":{}}}' \
+  | jq .
+```
+
+#### Unauthenticated endpoints
+
+The following MCP methods are allowed **without credentials** and are used during the standard MCP connection handshake:
+
+| Method | Purpose |
+|----------------------------|--------------------------|
+| `initialize` | Protocol negotiation |
+| `notifications/initialized` | Client ready notification |
+| `ping` | Keepalive |
+| `tools/list` | Enumerate available tools |
+
+All other methods (`tools/call`, etc.) require valid `X-CCF-Access-Key` and `X-CCF-Secret-Key` headers and return `401 Unauthorized` if they are missing or invalid.
 
 ### Print version information
 
