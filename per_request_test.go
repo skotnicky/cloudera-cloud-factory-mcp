@@ -133,3 +133,31 @@ func TestClientFromContextNilClientFallsBackToGlobal(t *testing.T) {
 		t.Fatal("expected nil context value to fall back to global taikunClient")
 	}
 }
+
+// ---- contextWithSkipRobotScope / shouldSkipRobotScope ----
+
+func TestShouldSkipRobotScopeDefaultFalse(t *testing.T) {
+	if shouldSkipRobotScope(context.Background()) {
+		t.Error("expected shouldSkipRobotScope=false on a bare context")
+	}
+}
+
+func TestContextWithSkipRobotScopeRoundTrip(t *testing.T) {
+	ctx := contextWithSkipRobotScope(context.Background())
+	if !shouldSkipRobotScope(ctx) {
+		t.Error("expected shouldSkipRobotScope=true after contextWithSkipRobotScope")
+	}
+}
+
+func TestSkipRobotScopeDoesNotAffectClientKey(t *testing.T) {
+	client := makeClient("test")
+	ctx := contextWithClient(context.Background(), client)
+	ctx = contextWithSkipRobotScope(ctx)
+
+	if clientFromContext(ctx) != client {
+		t.Error("setting skipRobotScope should not interfere with client context key")
+	}
+	if !shouldSkipRobotScope(ctx) {
+		t.Error("expected skipRobotScope=true")
+	}
+}

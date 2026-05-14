@@ -10,7 +10,10 @@ import (
 
 type ctxKey int
 
-const ctxKeyClient ctxKey = iota
+const (
+	ctxKeyClient ctxKey = iota
+	ctxKeySkipRobotScope
+)
 
 // clientFromContext returns the per-request CCF client stored in ctx.
 // Falls back to the global taikunClient (used in stdio transport mode).
@@ -23,6 +26,15 @@ func clientFromContext(ctx context.Context) *taikungoclient.Client {
 
 func contextWithClient(ctx context.Context, client *taikungoclient.Client) context.Context {
 	return context.WithValue(ctx, ctxKeyClient, client)
+}
+
+func contextWithSkipRobotScope(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeySkipRobotScope, true)
+}
+
+func shouldSkipRobotScope(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeySkipRobotScope).(bool)
+	return v
 }
 
 // createTaikunClientFromCreds validates credentials and returns a new CCF client.

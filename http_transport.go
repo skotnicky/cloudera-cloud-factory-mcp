@@ -7,9 +7,11 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 
+	"github.com/itera-io/taikungoclient"
 	"github.com/metoro-io/mcp-golang/transport"
 )
 
@@ -93,18 +95,37 @@ func (t *authHTTPTransport) handleRequest(w http.ResponseWriter, r *http.Request
 	secretKey := r.Header.Get("X-CCF-Secret-Key")
 	credentialsProvided := accessKey != "" || secretKey != ""
 
+	// Also check for Bearer token auth
+	bearerToken := ""
+	if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+		bearerToken = strings.TrimPrefix(authHeader, "Bearer ")
+	}
+
 	var ctx = r.Context()
-	if credentialsProvided || !noAuthMethods[peek.Method] {
-		client, err := createTaikunClientFromCreds(
-			accessKey,
-			secretKey,
-			r.Header.Get("X-CCF-Api-Host"),
-		)
+	if credentialsProvided || bearerToken != "" || !noAuthMethods[peek.Method] {
+		var client *taikungoclient.Client
+		var err error
+		apiHost := r.Header.Get("X-CCF-Api-Host")
+		if apiHost == "" {
+			apiHost = defaultAPIHost
+		}
+
+		if credentialsProvided {
+			client, err = createTaikunClientFromCreds(accessKey, secretKey, apiHost)
+		} else if bearerToken != "" {
+			client = taikungoclient.NewClientFromToken(bearerToken, apiHost)
+		} else {
+			err = fmt.Errorf("missing credentials: provide X-CCF-Access-Key/X-CCF-Secret-Key or Authorization: Bearer <token>")
+		}
+
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
 		}
 		ctx = contextWithClient(ctx, client)
+		if bearerToken != "" && !credentialsProvided {
+			ctx = contextWithSkipRobotScope(ctx)
+		}
 	}
 
 	response, err := t.processMessage(ctx, body)

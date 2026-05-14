@@ -46,6 +46,24 @@ func mcpPost(t *testing.T, url, body, accessKey, secretKey string) *http.Respons
 	return resp
 }
 
+// mcpPostBearer sends a JSON-RPC POST with an Authorization: Bearer header.
+func mcpPostBearer(t *testing.T, url, body, token string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest("POST", url+"/mcp", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("failed to build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	return resp
+}
+
 // ---- HTTP method / auth guards ----
 
 func TestAuthHTTPTransportRejectsNonPost(t *testing.T) {
@@ -588,5 +606,199 @@ func TestNoAuthMethodsInjectClientWhenCredentialsProvided(t *testing.T) {
 				t.Error("expected non-nil client in context when credentials are provided")
 			}
 		})
+	}
+}
+
+// ---- Bearer token authentication ----
+
+func TestBearerTokenInjectsClientIntoContext(t *testing.T) {
+	tr, ts := newTestTransport(t)
+
+	clientPresent := make(chan bool, 1)
+	tr.SetMessageHandler(func(ctx context.Context, msg *transport.BaseJsonRpcMessage) {
+		if msg.JsonRpcRequest == nil {
+			return
+		}
+		clientPresent <- clientFromContext(ctx) != nil
+		_ = tr.Send(ctx, &transport.BaseJsonRpcMessage{
+			Type: transport.BaseMessageTypeJSONRPCResponseType,
+			JsonRpcResponse: &transport.BaseJSONRPCResponse{
+				Id:      msg.JsonRpcRequest.Id,
+				Jsonrpc: "2.0",
+				Result:  json.RawMessage(`{}`),
+			},
+		})
+	})
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}`
+	resp := mcpPostBearer(t, ts.URL, body, "some-valid-token")
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 with bearer token, got %d", resp.StatusCode)
+	}
+	if hasClient := <-clientPresent; !hasClient {
+		t.Error("expected non-nil client in context when bearer token is provided")
+	}
+}
+
+func TestBearerTokenSetsSkipRobotScope(t *testing.T) {
+	tr, ts := newTestTransport(t)
+
+	skipScope := make(chan bool, 1)
+	tr.SetMessageHandler(func(ctx context.Context, msg *transport.BaseJsonRpcMessage) {
+		if msg.JsonRpcRequest == nil {
+			return
+		}
+		skipScope <- shouldSkipRobotScope(ctx)
+		_ = tr.Send(ctx, &transport.BaseJsonRpcMessage{
+			Type: transport.BaseMessageTypeJSONRPCResponseType,
+			JsonRpcResponse: &transport.BaseJSONRPCResponse{
+				Id:      msg.JsonRpcRequest.Id,
+				Jsonrpc: "2.0",
+				Result:  json.RawMessage(`{}`),
+			},
+		})
+	})
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}`
+	resp := mcpPostBearer(t, ts.URL, body, "some-valid-token")
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 with bearer token, got %d", resp.StatusCode)
+	}
+	if skip := <-skipScope; !skip {
+		t.Error("expected shouldSkipRobotScope=true when bearer token is used")
+	}
+}
+
+func TestAccessKeyCredentialsDoNotSetSkipRobotScope(t *testing.T) {
+	tr, ts := newTestTransport(t)
+
+	skipScope := make(chan bool, 1)
+	tr.SetMessageHandler(func(ctx context.Context, msg *transport.BaseJsonRpcMessage) {
+		if msg.JsonRpcRequest == nil {
+			return
+		}
+		skipScope <- shouldSkipRobotScope(ctx)
+		_ = tr.Send(ctx, &transport.BaseJsonRpcMessage{
+			Type: transport.BaseMessageTypeJSONRPCResponseType,
+			JsonRpcResponse: &transport.BaseJSONRPCResponse{
+				Id:      msg.JsonRpcRequest.Id,
+				Jsonrpc: "2.0",
+				Result:  json.RawMessage(`{}`),
+			},
+		})
+	})
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}`
+	resp := mcpPost(t, ts.URL, body, "access-key", "secret-key")
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 with credentials, got %d", resp.StatusCode)
+	}
+	if skip := <-skipScope; skip {
+		t.Error("expected shouldSkipRobotScope=false when access-key credentials are used")
+	}
+}
+
+func TestAccessKeyCredentialsTakePriorityOverBearerToken(t *testing.T) {
+	tr, ts := newTestTransport(t)
+
+	skipScope := make(chan bool, 1)
+	tr.SetMessageHandler(func(ctx context.Context, msg *transport.BaseJsonRpcMessage) {
+		if msg.JsonRpcRequest == nil {
+			return
+		}
+		skipScope <- shouldSkipRobotScope(ctx)
+		_ = tr.Send(ctx, &transport.BaseJsonRpcMessage{
+			Type: transport.BaseMessageTypeJSONRPCResponseType,
+			JsonRpcResponse: &transport.BaseJSONRPCResponse{
+				Id:      msg.JsonRpcRequest.Id,
+				Jsonrpc: "2.0",
+				Result:  json.RawMessage(`{}`),
+			},
+		})
+	})
+
+	// Send both access-key headers AND a bearer token.
+	body := `{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}`
+	req, err := http.NewRequest("POST", ts.URL+"/mcp", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("failed to build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CCF-Access-Key", "access-key")
+	req.Header.Set("X-CCF-Secret-Key", "secret-key")
+	req.Header.Set("Authorization", "Bearer some-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if skip := <-skipScope; skip {
+		t.Error("expected skipRobotScope=false: access-key credentials should take priority over bearer token")
+	}
+}
+
+func TestBearerTokenIgnoredWhenPrefixMismatch(t *testing.T) {
+	_, ts := newTestTransport(t)
+
+	// "Token " instead of "Bearer " should not be recognized.
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check-client","arguments":{}}}`
+	req, err := http.NewRequest("POST", ts.URL+"/mcp", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("failed to build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Token some-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 when Authorization header uses unsupported scheme, got %d", resp.StatusCode)
+	}
+}
+
+func TestBearerTokenAllowsToolCallViaFullMCPServer(t *testing.T) {
+	url := newMCPTestServer(t)
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check-client","arguments":{}}}`
+	resp := mcpPostBearer(t, url, body, "valid-bearer-token")
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 with bearer token, got %d", resp.StatusCode)
+	}
+
+	var rpc struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rpc); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(rpc.Result.Content) == 0 {
+		t.Fatal("expected content in tool response")
+	}
+
+	var result checkClientResult
+	if err := json.Unmarshal([]byte(rpc.Result.Content[0].Text), &result); err != nil {
+		t.Fatalf("decode tool result: %v", err)
+	}
+	if !result.HasClient {
+		t.Error("expected hasClient=true when using bearer token auth")
 	}
 }

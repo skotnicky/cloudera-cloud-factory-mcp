@@ -535,6 +535,9 @@ func resolveRobotUserContext(reqCtx context.Context) RobotUserContext {
 }
 
 func authorizeTool(reqCtx context.Context, toolName string) *mcp_golang.ToolResponse {
+	if shouldSkipRobotScope(reqCtx) {
+		return nil
+	}
 	robotCtx := resolveRobotUserContext(reqCtx)
 	access := evaluateToolScopeAccess(toolName, robotCtx.Scopes)
 	if access.Status == "unknown" {
