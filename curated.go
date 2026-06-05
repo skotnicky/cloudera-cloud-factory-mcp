@@ -84,12 +84,6 @@ type idNameRef struct {
 	Name string `json:"name,omitempty"`
 }
 
-// stringIDNameRef is the string-id variant of idNameRef.
-type stringIDNameRef struct {
-	ID   string `json:"id,omitempty"`
-	Name string `json:"name,omitempty"`
-}
-
 func compactDropdownRefs(items []taikuncore.CommonDropdownDto) []idNameRef {
 	if len(items) == 0 {
 		return nil
@@ -97,17 +91,6 @@ func compactDropdownRefs(items []taikuncore.CommonDropdownDto) []idNameRef {
 	refs := make([]idNameRef, 0, len(items))
 	for i := range items {
 		refs = append(refs, idNameRef{ID: items[i].GetId(), Name: items[i].GetName()})
-	}
-	return refs
-}
-
-func compactStringDropdownRefs(items []taikuncore.CommonStringBasedDropdownDto) []stringIDNameRef {
-	if len(items) == 0 {
-		return nil
-	}
-	refs := make([]stringIDNameRef, 0, len(items))
-	for i := range items {
-		refs = append(refs, stringIDNameRef{ID: items[i].GetId(), Name: items[i].GetName()})
 	}
 	return refs
 }

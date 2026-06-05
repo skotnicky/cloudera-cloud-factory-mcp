@@ -534,14 +534,6 @@ func buildCompactCapabilitiesResponse(robotCtx RobotUserContext) RobotUserCapabi
 	}
 }
 
-func currentRobotUserCapabilities() RobotUserCapabilitiesResponse {
-	return buildCapabilitiesResponse(getRobotUserContext())
-}
-
-func getRobotUserCapabilities() *mcp_golang.ToolResponse {
-	return createJSONResponse(currentRobotUserCapabilities())
-}
-
 func scopeDeniedResponseWithCtx(toolName string, access ToolScopeAccess, robotCtx RobotUserContext) *mcp_golang.ToolResponse {
 	details := fmt.Sprintf("Required scopes: %s. Missing scopes: %s.",
 		strings.Join(access.RequiredScopes, ", "),
