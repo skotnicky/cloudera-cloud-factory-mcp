@@ -68,7 +68,7 @@ func listBackupCredentials(client *taikungoclient.Client, args SearchListArgs) (
 			total = len(items)
 		}
 	}
-	return createListResponse("backupCredentials", items, total, listMessage(total, "backup credential", "backup credentials")), nil
+	return createListResponse("backupCredentials", compactJSON(items), total, listMessage(total, "backup credential", "backup credentials")), nil
 }
 
 func createBackupCredential(client *taikungoclient.Client, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
@@ -116,7 +116,7 @@ func dropdownBackupCredentials(client *taikungoclient.Client, args SearchListArg
 	if errorResp := checkResponse(httpResponse, "list backup credential dropdown values"); errorResp != nil {
 		return errorResp, nil
 	}
-	return createListResponse("backupCredentials", items, len(items), listMessage(len(items), "backup credential", "backup credentials")), nil
+	return createListResponse("backupCredentials", compactJSON(items), len(items), listMessage(len(items), "backup credential", "backup credentials")), nil
 }
 
 func makeBackupCredentialDefault(client *taikungoclient.Client, args IDArgs) (*mcp_golang.ToolResponse, error) {
@@ -161,7 +161,7 @@ func getBackupByName(client *taikungoclient.Client, args ProjectNameArgs) (*mcp_
 		return errorResp, nil
 	}
 	return createJSONResponse(map[string]interface{}{
-		"backup":  result,
+		"backup":  compactJSON(result),
 		"message": fmt.Sprintf("Loaded backup %q for project %d", args.Name, args.ProjectID),
 		"success": true,
 	}), nil
@@ -185,7 +185,7 @@ func listProjectBackups(client *taikungoclient.Client, args ProjectIDArgs) (*mcp
 			total = len(result.GetData())
 		}
 	}
-	return createListResponse("backups", items, total, listMessage(total, "backup", "backups")), nil
+	return createListResponse("backups", compactJSON(items), total, listMessage(total, "backup", "backups")), nil
 }
 
 func listProjectRestoreRequests(client *taikungoclient.Client, args ProjectIDArgs) (*mcp_golang.ToolResponse, error) {
@@ -206,7 +206,7 @@ func listProjectRestoreRequests(client *taikungoclient.Client, args ProjectIDArg
 			total = len(result.GetData())
 		}
 	}
-	return createListResponse("restores", items, total, listMessage(total, "restore", "restores")), nil
+	return createListResponse("restores", compactJSON(items), total, listMessage(total, "restore", "restores")), nil
 }
 
 func listProjectBackupSchedules(client *taikungoclient.Client, args ProjectIDArgs) (*mcp_golang.ToolResponse, error) {
@@ -227,7 +227,7 @@ func listProjectBackupSchedules(client *taikungoclient.Client, args ProjectIDArg
 			total = len(result.GetData())
 		}
 	}
-	return createListResponse("schedules", items, total, listMessage(total, "schedule", "schedules")), nil
+	return createListResponse("schedules", compactJSON(items), total, listMessage(total, "schedule", "schedules")), nil
 }
 
 func listProjectBackupStorageLocations(client *taikungoclient.Client, args ProjectIDArgs) (*mcp_golang.ToolResponse, error) {
@@ -248,7 +248,7 @@ func listProjectBackupStorageLocations(client *taikungoclient.Client, args Proje
 			total = len(result.GetData())
 		}
 	}
-	return createListResponse("storageLocations", items, total, listMessage(total, "storage location", "storage locations")), nil
+	return createListResponse("storageLocations", compactJSON(items), total, listMessage(total, "storage location", "storage locations")), nil
 }
 
 func listProjectBackupDeleteRequests(client *taikungoclient.Client, args ProjectIDArgs) (*mcp_golang.ToolResponse, error) {
@@ -269,7 +269,7 @@ func listProjectBackupDeleteRequests(client *taikungoclient.Client, args Project
 			total = len(result.GetData())
 		}
 	}
-	return createListResponse("deleteRequests", items, total, listMessage(total, "delete request", "delete requests")), nil
+	return createListResponse("deleteRequests", compactJSON(items), total, listMessage(total, "delete request", "delete requests")), nil
 }
 
 func describeBackup(client *taikungoclient.Client, args ProjectNameArgs) (*mcp_golang.ToolResponse, error) {

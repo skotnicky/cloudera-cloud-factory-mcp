@@ -648,6 +648,19 @@ func TestArgumentStructs(t *testing.T) {
 				ConfigPath: "/tmp/config",
 			},
 		},
+		{
+			name: "CloudCredentialWriteArgs",
+			data: CloudCredentialWriteArgs{
+				CloudType: "aws",
+				Payload:   `{"name":"aws-cred"}`,
+			},
+		},
+		{
+			name: "RobotUserCapabilitiesArgsDetailed",
+			data: RobotUserCapabilitiesArgs{
+				Detailed: true,
+			},
+		},
 	}
 
 	for _, tt := range tests {

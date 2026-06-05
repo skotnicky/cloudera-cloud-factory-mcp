@@ -21,6 +21,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/kubernetes/scheme"
+	yamlsig "sigs.k8s.io/yaml"
 )
 
 type PodSummary struct {
@@ -33,34 +34,28 @@ type PodSummary struct {
 }
 
 type DeploymentSummary struct {
-	Name              string `json:"name"`
-	Namespace         string `json:"namespace"`
-	Replicas          int32  `json:"replicas"`
-	ReadyReplicas     int32  `json:"readyReplicas"`
-	UpdatedReplicas   int32  `json:"updatedReplicas"`
-	AvailableReplicas int32  `json:"availableReplicas"`
-	Age               string `json:"age"`
+	Name          string `json:"name"`
+	Namespace     string `json:"namespace"`
+	Replicas      int32  `json:"replicas"`
+	ReadyReplicas int32  `json:"readyReplicas"`
+	Age           string `json:"age"`
 }
 
 type ServiceSummary struct {
-	Name      string   `json:"name"`
-	Namespace string   `json:"namespace"`
-	Type      string   `json:"type"`
-	ClusterIP string   `json:"clusterIP"`
-	Ports     []string `json:"ports"`
-	Age       string   `json:"age"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	Type      string `json:"type"`
+	ClusterIP string `json:"clusterIP"`
+	Age       string `json:"age"`
 }
 
 type NamespaceSummary struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Age    string `json:"age"`
+	Name string `json:"name"`
 }
 
 type ConfigMapSummary struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
-	DataCount int    `json:"dataCount"`
 	Age       string `json:"age"`
 }
 
@@ -68,7 +63,6 @@ type SecretSummary struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
 	Type      string `json:"type"`
-	DataCount int    `json:"dataCount"`
 	Age       string `json:"age"`
 }
 
@@ -109,14 +103,10 @@ type JobSummary struct {
 }
 
 type NodeSummary struct {
-	Name             string `json:"name"`
-	Status           string `json:"status"`
-	Roles            string `json:"roles"`
-	Version          string `json:"version"`
-	OSImage          string `json:"osImage"`
-	KernelVersion    string `json:"kernelVersion"`
-	ContainerRuntime string `json:"containerRuntime"`
-	Age              string `json:"age"`
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Roles   string `json:"roles"`
+	Version string `json:"version"`
 }
 
 type PvcSummary struct {
@@ -377,6 +367,92 @@ func normalizeKubeconfigYaml(payload string) string {
 		normalized += "\n"
 	}
 	return normalized
+}
+
+// trimKubernetesDescribeYAML removes high-noise, low-signal fields from a
+// described Kubernetes object (metadata.managedFields and the
+// kubectl.kubernetes.io/last-applied-configuration annotation) which routinely
+// account for roughly half of a describe payload. If the input is not a single
+// YAML object it is returned unchanged.
+func trimKubernetesDescribeYAML(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return raw
+	}
+	var obj map[string]interface{}
+	if err := yamlsig.Unmarshal([]byte(trimmed), &obj); err != nil || len(obj) == 0 {
+		return raw
+	}
+	if meta, ok := obj["metadata"].(map[string]interface{}); ok {
+		delete(meta, "managedFields")
+		if ann, ok := meta["annotations"].(map[string]interface{}); ok {
+			delete(ann, "kubectl.kubernetes.io/last-applied-configuration")
+			if len(ann) == 0 {
+				delete(meta, "annotations")
+			}
+		}
+	}
+	out, err := yamlsig.Marshal(obj)
+	if err != nil {
+		return raw
+	}
+	return string(out)
+}
+
+type kubeConfigSummary struct {
+	Clusters       []string `json:"clusters,omitempty"`
+	ServerURLs     []string `json:"serverUrls,omitempty"`
+	Contexts       []string `json:"contexts,omitempty"`
+	CurrentContext string   `json:"currentContext,omitempty"`
+	Users          []string `json:"users,omitempty"`
+}
+
+// summarizeKubeconfig extracts non-secret metadata from a kubeconfig so the tool
+// can describe it without echoing CA/client certificates into the agent context.
+func summarizeKubeconfig(content string) kubeConfigSummary {
+	var summary kubeConfigSummary
+	var parsed map[string]interface{}
+	if err := yamlsig.Unmarshal([]byte(content), &parsed); err != nil {
+		return summary
+	}
+	if cc, ok := parsed["current-context"].(string); ok {
+		summary.CurrentContext = cc
+	}
+	if clusters, ok := parsed["clusters"].([]interface{}); ok {
+		for _, c := range clusters {
+			cm, ok := c.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if name, ok := cm["name"].(string); ok {
+				summary.Clusters = append(summary.Clusters, name)
+			}
+			if cluster, ok := cm["cluster"].(map[string]interface{}); ok {
+				if server, ok := cluster["server"].(string); ok {
+					summary.ServerURLs = append(summary.ServerURLs, server)
+				}
+			}
+		}
+	}
+	if contexts, ok := parsed["contexts"].([]interface{}); ok {
+		for _, c := range contexts {
+			if cm, ok := c.(map[string]interface{}); ok {
+				if name, ok := cm["name"].(string); ok {
+					summary.Contexts = append(summary.Contexts, name)
+				}
+			}
+		}
+	}
+	if users, ok := parsed["users"].([]interface{}); ok {
+		for _, u := range users {
+			if um, ok := u.(map[string]interface{}); ok {
+				if name, ok := um["name"].(string); ok {
+					summary.Users = append(summary.Users, name)
+				}
+			}
+		}
+	}
+	return summary
 }
 
 func validateKubernetesYaml(payload string) error {
@@ -834,39 +910,34 @@ func getKubeConfig(client *taikungoclient.Client, args GetKubeConfigArgs) (*mcp_
 		return createJSONResponse(errorResp), nil
 	}
 
-	type KubeConfigResponseData struct {
-		KubeConfig string `json:"kubeConfig"`
-		SavedPath  string `json:"savedPath,omitempty"`
-		Success    bool   `json:"success"`
-	}
-
 	normalizedKubeconfig := normalizeKubeconfigYaml(kubeconfig)
 
-	var savedPath string
-	if args.SavePath != "" {
-		dir := filepath.Dir(args.SavePath)
-		if dir != "." {
-			if err := os.MkdirAll(dir, 0o750); err != nil {
-				return createJSONResponse(ErrorResponse{
-					Error: fmt.Sprintf("Failed to create directory for kubeconfig: %v", err),
-				}), nil
-			}
-		}
-		if err := os.WriteFile(args.SavePath, []byte(normalizedKubeconfig), 0o600); err != nil {
+	// Kubeconfigs contain CA and client credentials. Rather than echo them into
+	// the agent context, always persist to a file (defaulting to a temp path)
+	// and return only the path plus a non-secret summary.
+	savePath := args.SavePath
+	if savePath == "" {
+		savePath = filepath.Join(os.TempDir(), fmt.Sprintf("ccf-kubeconfig-%d-%d.yaml", args.ProjectID, time.Now().Unix()))
+	}
+	if dir := filepath.Dir(savePath); dir != "." {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return createJSONResponse(ErrorResponse{
-				Error: fmt.Sprintf("Failed to write kubeconfig file: %v", err),
+				Error: fmt.Sprintf("Failed to create directory for kubeconfig: %v", err),
 			}), nil
 		}
-		savedPath = args.SavePath
+	}
+	if err := os.WriteFile(savePath, []byte(normalizedKubeconfig), 0o600); err != nil {
+		return createJSONResponse(ErrorResponse{
+			Error: fmt.Sprintf("Failed to write kubeconfig file: %v", err),
+		}), nil
 	}
 
-	resp := KubeConfigResponseData{
-		KubeConfig: normalizedKubeconfig,
-		SavedPath:  savedPath,
-		Success:    true,
-	}
-
-	return createJSONResponse(resp), nil
+	return createJSONResponse(map[string]interface{}{
+		"savedPath": savePath,
+		"summary":   summarizeKubeconfig(normalizedKubeconfig),
+		"success":   true,
+		"message":   fmt.Sprintf("Kubeconfig for project %d written to %s. It contains credentials and is intentionally not echoed into the response; read the file or pass it to kubectl with --kubeconfig.", args.ProjectID, savePath),
+	}), nil
 }
 
 func listKubeConfigRoles(client *taikungoclient.Client, _ ListKubeConfigRolesArgs) (*mcp_golang.ToolResponse, error) {
@@ -1072,6 +1143,13 @@ func listKubernetesResources(client *taikungoclient.Client, args ListKubernetesR
 		}), nil
 	}
 
+	// Bound the response by default; without a limit the cursor paginator drains
+	// every page, which is unbounded on large clusters. Callers can page with
+	// offset or raise limit explicitly.
+	if args.Limit <= 0 {
+		args.Limit = 200
+	}
+
 	switch canonicalKind {
 	case "Pods":
 		pods, response, err := fetchKubernetesListItems[podListItem](ctx, client, args.ProjectID, spec.resourcePath, args.Limit, args.Offset, args.SearchTerm)
@@ -1099,13 +1177,11 @@ func listKubernetesResources(client *taikungoclient.Client, args ListKubernetesR
 		for _, deployment := range deployments {
 			readyCount, totalCount := parseReadyCounts(deployment.Ready)
 			summaries = append(summaries, DeploymentSummary{
-				Name:              deployment.Name,
-				Namespace:         deployment.Namespace,
-				Replicas:          totalCount,
-				ReadyReplicas:     readyCount,
-				UpdatedReplicas:   0,
-				AvailableReplicas: 0,
-				Age:               formatAgeFromString(deployment.CreatedAt),
+				Name:          deployment.Name,
+				Namespace:     deployment.Namespace,
+				Replicas:      totalCount,
+				ReadyReplicas: readyCount,
+				Age:           formatAgeFromString(deployment.CreatedAt),
 			})
 		}
 		result = summaries
@@ -1121,7 +1197,6 @@ func listKubernetesResources(client *taikungoclient.Client, args ListKubernetesR
 				Namespace: service.Namespace,
 				Type:      service.Type,
 				ClusterIP: service.ClusterIP,
-				Ports:     nil,
 				Age:       formatAgeFromString(service.CreatedAt),
 			})
 		}
@@ -1137,9 +1212,7 @@ func listKubernetesResources(client *taikungoclient.Client, args ListKubernetesR
 				continue
 			}
 			summaries = append(summaries, NamespaceSummary{
-				Name:   name,
-				Status: "",
-				Age:    "",
+				Name: name,
 			})
 		}
 		if args.Offset > 0 || args.Limit > 0 {
@@ -1164,7 +1237,6 @@ func listKubernetesResources(client *taikungoclient.Client, args ListKubernetesR
 			summaries = append(summaries, ConfigMapSummary{
 				Name:      cm.Name,
 				Namespace: cm.Namespace,
-				DataCount: 0,
 				Age:       formatAgeFromString(cm.CreatedAt),
 			})
 		}
@@ -1180,7 +1252,6 @@ func listKubernetesResources(client *taikungoclient.Client, args ListKubernetesR
 				Name:      secret.Name,
 				Namespace: secret.Namespace,
 				Type:      secret.Type,
-				DataCount: 0,
 				Age:       formatAgeFromString(secret.CreatedAt),
 			})
 		}
@@ -1231,14 +1302,10 @@ func listKubernetesResources(client *taikungoclient.Client, args ListKubernetesR
 		summaries := make([]NodeSummary, 0, len(nodes))
 		for _, node := range nodes {
 			summaries = append(summaries, NodeSummary{
-				Name:             node.Name,
-				Status:           node.State,
-				Roles:            node.Role,
-				Version:          node.Version,
-				OSImage:          "",
-				KernelVersion:    "",
-				ContainerRuntime: "",
-				Age:              "",
+				Name:    node.Name,
+				Status:  node.State,
+				Roles:   node.Role,
+				Version: node.Version,
 			})
 		}
 		result = summaries
@@ -1315,7 +1382,7 @@ func describeKubernetesResource(client *taikungoclient.Client, args DescribeKube
 		Success bool   `json:"success"`
 	}
 	resp := DescribeResponse{
-		YAML:    normalizeYamlOutput(description),
+		YAML:    trimKubernetesDescribeYAML(normalizeYamlOutput(description)),
 		Success: true,
 	}
 	return createJSONResponse(resp), nil

@@ -69,7 +69,7 @@ func listStandaloneVMs(client *taikungoclient.Client, args ProjectSearchListArgs
 			total = len(result.GetData())
 		}
 	}
-	return createListResponse("standaloneVMs", items, total, listMessage(total, "standalone VM", "standalone VMs")), nil
+	return createListResponse("standaloneVMs", compactJSON(items), total, listMessage(total, "standalone VM", "standalone VMs")), nil
 }
 
 func getStandaloneVMDetails(client *taikungoclient.Client, args ProjectSearchListArgs) (*mcp_golang.ToolResponse, error) {
@@ -92,7 +92,7 @@ func getStandaloneVMDetails(client *taikungoclient.Client, args ProjectSearchLis
 		return errorResp, nil
 	}
 	return createJSONResponse(map[string]interface{}{
-		"standaloneVMs": result,
+		"standaloneVMs": compactJSON(result),
 		"message":       fmt.Sprintf("Loaded standalone VM details for project %d", args.ProjectID),
 		"success":       true,
 	}), nil
@@ -303,7 +303,7 @@ func getStandaloneVMStatus(client *taikungoclient.Client, args IDArgs) (*mcp_gol
 		return errorResp, nil
 	}
 	return createJSONResponse(map[string]interface{}{
-		"status":  result,
+		"status":  compactJSON(result),
 		"message": fmt.Sprintf("Loaded status for standalone VM %d", args.ID),
 		"success": true,
 	}), nil
@@ -439,7 +439,7 @@ func listStandaloneProfiles(client *taikungoclient.Client, args SearchListArgs) 
 			total = len(result.GetData())
 		}
 	}
-	return createListResponse("standaloneProfiles", items, total, listMessage(total, "standalone profile", "standalone profiles")), nil
+	return createListResponse("standaloneProfiles", compactJSON(items), total, listMessage(total, "standalone profile", "standalone profiles")), nil
 }
 
 func createStandaloneProfile(client *taikungoclient.Client, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
@@ -492,7 +492,7 @@ func dropdownStandaloneProfiles(client *taikungoclient.Client, args SearchListAr
 	if errorResp := checkResponse(httpResponse, "list standalone profile dropdown values"); errorResp != nil {
 		return errorResp, nil
 	}
-	return createListResponse("standaloneProfiles", items, len(items), listMessage(len(items), "standalone profile", "standalone profiles")), nil
+	return createListResponse("standaloneProfiles", compactJSON(items), len(items), listMessage(len(items), "standalone profile", "standalone profiles")), nil
 }
 
 func lockStandaloneProfile(client *taikungoclient.Client, args LockModeArgs) (*mcp_golang.ToolResponse, error) {

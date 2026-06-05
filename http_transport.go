@@ -9,6 +9,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/metoro-io/mcp-golang/transport"
 )
@@ -53,7 +54,16 @@ func (t *authHTTPTransport) ListenAndServe() error {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	t.server = &http.Server{Addr: t.addr, Handler: mux}
+	t.server = &http.Server{
+		Addr:              t.addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 15 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		// WriteTimeout is intentionally left unset: some tools (create-cluster,
+		// commit-project, and the capped wait tools) legitimately take minutes,
+		// and a fixed write deadline would abort their responses mid-flight.
+	}
 	host := t.addr
 	if len(host) > 0 && host[0] == ':' {
 		host = "localhost" + host
@@ -66,9 +76,9 @@ func (t *authHTTPTransport) ListenAndServe() error {
 
 // noAuthMethods lists JSON-RPC methods that do not require CCF credentials.
 var noAuthMethods = map[string]bool{
-	"initialize":               true,
-	"ping":                     true,
-	"tools/list":               true,
+	"initialize":                true,
+	"ping":                      true,
+	"tools/list":                true,
 	"notifications/initialized": true,
 }
 
@@ -95,16 +105,14 @@ func (t *authHTTPTransport) handleRequest(w http.ResponseWriter, r *http.Request
 
 	var ctx = r.Context()
 	if credentialsProvided || !noAuthMethods[peek.Method] {
-		client, err := createTaikunClientFromCreds(
-			accessKey,
-			secretKey,
-			r.Header.Get("X-CCF-Api-Host"),
-		)
+		apiHost := r.Header.Get("X-CCF-Api-Host")
+		client, err := getOrCreateTaikunClient(accessKey, secretKey, apiHost)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
 		}
 		ctx = contextWithClient(ctx, client)
+		ctx = contextWithCredentialKey(ctx, credentialCacheKey(accessKey, secretKey, apiHost))
 	}
 
 	response, err := t.processMessage(ctx, body)

@@ -27,7 +27,23 @@ var (
 	logger       *log.Logger
 	logFilePath  = "/tmp/cloudera_cloud_factory_mcp_server.log"
 	taikunClient *taikungoclient.Client
+	// httpTransportMode is true when serving the HTTP transport. In that mode a
+	// blocking tool ties up a request/goroutine and an upstream connection, so
+	// long waits are capped and the caller is told to poll again.
+	httpTransportMode bool
 )
+
+const maxHTTPWaitSeconds = 120
+
+// effectiveWaitTimeout clamps a requested wait (seconds) to maxHTTPWaitSeconds
+// in HTTP transport mode. The second return value reports whether it was capped
+// so callers can return a "pending, poll again" result instead of a failure.
+func effectiveWaitTimeout(requestedSeconds int) (int, bool) {
+	if httpTransportMode && requestedSeconds > maxHTTPWaitSeconds {
+		return maxHTTPWaitSeconds, true
+	}
+	return requestedSeconds, false
+}
 
 const (
 	defaultAPIHost = "api-latest.osc1.sjc.cloudera.com"
@@ -521,26 +537,27 @@ func refreshTaikunClientCtx(ctx context.Context) *mcp_golang.ToolResponse {
 		robotCtx := refreshRobotUserContext()
 		return createJSONResponse(newRefreshTaikunClientResponse(robotCtx))
 	}
-	// HTTP mode: fetch robot user context for the per-request credentials
+	// HTTP mode: fetch robot user context for the per-request credentials and
+	// refresh the cached entry so subsequent tool calls observe updated scopes.
+	credKey := credentialKeyFromContext(ctx)
+	invalidateCachedRobotContext(credKey)
 	robotCtx, err := fetchRobotUserContext(client)
 	if err != nil {
 		robotCtx = RobotUserContext{ScopeDiscoveryError: err.Error()}
+	} else {
+		setCachedRobotContext(credKey, robotCtx)
 	}
 	return createJSONResponse(newRefreshTaikunClientResponse(robotCtx))
 }
 
-func getRobotUserCapabilitiesCtx(ctx context.Context) *mcp_golang.ToolResponse {
-	client := clientFromContext(ctx)
-	if client == taikunClient {
-		// stdio mode: use the cached global robot user context
-		return getRobotUserCapabilities()
+func getRobotUserCapabilitiesCtx(ctx context.Context, detailed bool) *mcp_golang.ToolResponse {
+	// resolveRobotUserContext serves the global context in stdio mode and a
+	// short-TTL cached context (per credentials) in HTTP mode.
+	robotCtx := resolveRobotUserContext(ctx)
+	if detailed {
+		return createJSONResponse(buildCapabilitiesResponse(robotCtx))
 	}
-	// HTTP mode: fetch robot user context for the per-request credentials
-	robotCtx, err := fetchRobotUserContext(client)
-	if err != nil {
-		robotCtx = RobotUserContext{ScopeDiscoveryError: err.Error()}
-	}
-	return createJSONResponse(buildCapabilitiesResponse(robotCtx))
+	return createJSONResponse(buildCompactCapabilitiesResponse(robotCtx))
 }
 
 func newRefreshTaikunClientResponse(robotCtx RobotUserContext) RefreshTaikunClientResponse {
@@ -592,6 +609,7 @@ func main() {
 
 	switch *transportFlag {
 	case "http":
+		httpTransportMode = true
 		httpTransport = newAuthHTTPTransport(*addrFlag, *endpointFlag)
 		server = mcp_golang.NewServer(
 			httpTransport,
@@ -632,8 +650,8 @@ func main() {
 	}
 	logger.Println("Registered refresh-taikun-client tool")
 
-	err = registerScopedTool(server, "robot-user-capabilities", "Show the current Robot User identity, scopes, and MCP tool access", func(ctx context.Context, args RobotUserCapabilitiesArgs) (*mcp_golang.ToolResponse, error) {
-		return getRobotUserCapabilitiesCtx(ctx), nil
+	err = registerScopedTool(server, "robot-user-capabilities", "Show the current Robot User identity, scopes, and which MCP tools it can use. Returns compact allowed/blocked tool name lists by default; pass detailed=true for the full per-tool scope matrix.", func(ctx context.Context, args RobotUserCapabilitiesArgs) (*mcp_golang.ToolResponse, error) {
+		return getRobotUserCapabilitiesCtx(ctx, args.Detailed), nil
 	})
 	if err != nil {
 		logger.Fatalf("Failed to register robot-user-capabilities tool: %v", err)
@@ -825,7 +843,7 @@ func main() {
 	logger.Println("Registered catalog-app-defaults-set tool")
 
 	err = registerScopedTool(server, "app-install", "Install a new application instance with optional defaults and overrides. If timeout is omitted, the install request defaults to 10 minutes; TTL defaults to 10 minutes; larger applications may need a higher timeout.", func(ctx context.Context, args InstallAppArgs) (*mcp_golang.ToolResponse, error) {
-		return installApp(clientFromContext(ctx), args)
+		return installApp(ctx, clientFromContext(ctx), args)
 	})
 	if err != nil {
 		logger.Fatalf("Failed to register app-install tool: %v", err)
@@ -857,7 +875,7 @@ func main() {
 	logger.Println("Registered update-app-autosync tool")
 
 	err = registerScopedTool(server, "update-sync-app", "Update application values and sync", func(ctx context.Context, args UpdateSyncAppArgs) (*mcp_golang.ToolResponse, error) {
-		return updateSyncApp(clientFromContext(ctx), args)
+		return updateSyncApp(ctx, clientFromContext(ctx), args)
 	})
 	if err != nil {
 		logger.Fatalf("Failed to register update-sync-app tool: %v", err)
@@ -872,8 +890,8 @@ func main() {
 	}
 	logger.Println("Registered uninstall-app tool")
 
-	err = registerScopedTool(server, "wait-for-app", "Wait for an application instance to be ready", func(ctx context.Context, args WaitForAppArgs) (*mcp_golang.ToolResponse, error) {
-		return waitForApp(clientFromContext(ctx), args)
+	err = registerScopedTool(server, "wait-for-app", "Wait for an application instance to be ready. In HTTP mode the wait is capped at 120 seconds to avoid long-held requests; if the result has status \"pending\", call wait-for-app again or poll get-app.", func(ctx context.Context, args WaitForAppArgs) (*mcp_golang.ToolResponse, error) {
+		return waitForApp(ctx, clientFromContext(ctx), args)
 	})
 	if err != nil {
 		logger.Fatalf("Failed to register wait-for-app tool: %v", err)
@@ -897,7 +915,7 @@ func main() {
 	logger.Println("Registered create-project tool")
 
 	err = registerScopedTool(server, "create-cluster", "Create a Kubernetes cluster end-to-end (project, nodes, commit, optional wait) using profile-aware defaults and cloud-credential flavor discovery", func(ctx context.Context, args CreateClusterArgs) (*mcp_golang.ToolResponse, error) {
-		return createCluster(clientFromContext(ctx), args)
+		return createCluster(ctx, clientFromContext(ctx), args)
 	})
 	if err != nil {
 		logger.Fatalf("Failed to register create-cluster tool: %v", err)
@@ -912,8 +930,8 @@ func main() {
 	}
 	logger.Println("Registered delete-project tool")
 
-	err = registerScopedTool(server, "wait-for-project", "Wait for a project to be ready and healthy, or with waitDeleted for completion of project deletion. After delete-project on an empty project, pass a short timeout (e.g. 10 to 30 seconds) with waitDeleted true; projects that had servers or VMs typically need longer.", func(ctx context.Context, args WaitForProjectArgs) (*mcp_golang.ToolResponse, error) {
-		return waitForProject(clientFromContext(ctx), args)
+	err = registerScopedTool(server, "wait-for-project", "Wait for a project to be ready and healthy, or with waitDeleted for completion of project deletion. After delete-project on an empty project, pass a short timeout (e.g. 10 to 30 seconds) with waitDeleted true; projects that had servers or VMs typically need longer. In HTTP mode the wait is capped at 120 seconds; if the result has status \"pending\", call wait-for-project again or poll get-project-details.", func(ctx context.Context, args WaitForProjectArgs) (*mcp_golang.ToolResponse, error) {
+		return waitForProject(ctx, clientFromContext(ctx), args)
 	})
 	if err != nil {
 		logger.Fatalf("Failed to register wait-for-project tool: %v", err)
@@ -1128,7 +1146,7 @@ func main() {
 	mustRegisterScopedTool(server, "delete-identity-group", "Delete an identity group", func(ctx context.Context, args IDArgs) (*mcp_golang.ToolResponse, error) {
 		return deleteIdentityGroup(clientFromContext(ctx), args)
 	})
-	mustRegisterScopedTool(server, "list-users", "List users within a domain", func(ctx context.Context, args SearchListArgs) (*mcp_golang.ToolResponse, error) {
+	mustRegisterScopedTool(server, "list-users", "List users within a domain. domainId is required (it scopes the lookup to a specific domain/account).", func(ctx context.Context, args SearchListArgs) (*mcp_golang.ToolResponse, error) {
 		return listUsers(clientFromContext(ctx), args)
 	})
 	mustRegisterScopedTool(server, "create-user", "Create a user", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
@@ -1396,7 +1414,7 @@ func main() {
 		return getProjectServiceStatus(clientFromContext(ctx), args)
 	})
 
-	mustRegisterScopedTool(server, "list-images", "List images for a provider", func(ctx context.Context, args ImageListArgs) (*mcp_golang.ToolResponse, error) {
+	mustRegisterScopedTool(server, "list-images", "List images for a provider. For aws public images, supply a payload body (AwsImagesPostListCommand with owners/filters/architecture); cloudId alone is not sufficient for aws public mode.", func(ctx context.Context, args ImageListArgs) (*mcp_golang.ToolResponse, error) {
 		return listImages(clientFromContext(ctx), args)
 	})
 	mustRegisterScopedTool(server, "get-image-details", "Get image details", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
@@ -1507,44 +1525,11 @@ func main() {
 		return deleteStandaloneProfileSecurityGroup(clientFromContext(ctx), args)
 	})
 
-	mustRegisterScopedTool(server, "create-aws-cloud-credential", "Create an AWS cloud credential", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
-		return createAWSCloudCredential(clientFromContext(ctx), args)
+	mustRegisterScopedTool(server, "create-cloud-credential", "Create a cloud credential. Set cloudType to one of aws, azure, openstack, proxmox, vsphere, zadara; payload matches that cloud's create command.", func(ctx context.Context, args CloudCredentialWriteArgs) (*mcp_golang.ToolResponse, error) {
+		return createCloudCredential(clientFromContext(ctx), args)
 	})
-	mustRegisterScopedTool(server, "update-aws-cloud-credential", "Update an AWS cloud credential", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
-		return updateAWSCloudCredential(clientFromContext(ctx), args)
-	})
-	mustRegisterScopedTool(server, "create-azure-cloud-credential", "Create an Azure cloud credential", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
-		return createAzureCloudCredential(clientFromContext(ctx), args)
-	})
-	mustRegisterScopedTool(server, "update-azure-cloud-credential", "Update an Azure cloud credential", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
-		return updateAzureCloudCredential(clientFromContext(ctx), args)
-	})
-	mustRegisterScopedTool(server, "create-openstack-cloud-credential", "Create an OpenStack cloud credential", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
-		return createOpenStackCloudCredential(clientFromContext(ctx), args)
-	})
-	mustRegisterScopedTool(server, "update-openstack-cloud-credential", "Update an OpenStack cloud credential", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
-		return updateOpenStackCloudCredential(clientFromContext(ctx), args)
-	})
-	mustRegisterScopedTool(server, "create-proxmox-cloud-credential", "Create a Proxmox cloud credential", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
-		return createProxmoxCloudCredential(clientFromContext(ctx), args)
-	})
-	mustRegisterScopedTool(server, "update-proxmox-cloud-credential", "Update a Proxmox cloud credential", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
-		return updateProxmoxCloudCredential(clientFromContext(ctx), args)
-	})
-	mustRegisterScopedTool(server, "create-vsphere-cloud-credential", "Create a vSphere cloud credential", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
-		return createVSphereCloudCredential(clientFromContext(ctx), args)
-	})
-	mustRegisterScopedTool(server, "update-vsphere-cloud-credential", "Update a vSphere cloud credential", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
-		return updateVSphereCloudCredential(clientFromContext(ctx), args)
-	})
-	mustRegisterScopedTool(server, "create-zadara-cloud-credential", "Create a Zadara cloud credential", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
-		return createZadaraCloudCredential(clientFromContext(ctx), args)
-	})
-	mustRegisterScopedTool(server, "update-zadara-cloud-credential", "Update a Zadara cloud credential", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
-		return updateZadaraCloudCredential(clientFromContext(ctx), args)
-	})
-	mustRegisterScopedTool(server, "update-generic-kubernetes-credential", "Update a generic Kubernetes cloud credential", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
-		return updateGenericKubernetesCloudCredential(clientFromContext(ctx), args)
+	mustRegisterScopedTool(server, "update-cloud-credential", "Update a cloud credential. Set cloudType to one of aws, azure, openstack, proxmox, vsphere, zadara, generic-kubernetes; payload matches that cloud's update command.", func(ctx context.Context, args CloudCredentialWriteArgs) (*mcp_golang.ToolResponse, error) {
+		return updateCloudCredential(clientFromContext(ctx), args)
 	})
 	mustRegisterScopedTool(server, "delete-cloud-credential", "Delete a cloud credential", func(ctx context.Context, args IDArgs) (*mcp_golang.ToolResponse, error) {
 		return deleteCloudCredential(clientFromContext(ctx), args)

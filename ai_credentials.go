@@ -56,7 +56,7 @@ func listAICredentials(client *taikungoclient.Client, args SearchListArgs) (*mcp
 			total = len(items)
 		}
 	}
-	return createListResponse("aiCredentials", items, total, listMessage(total, "AI credential", "AI credentials")), nil
+	return createListResponse("aiCredentials", toAICredentialSummaries(items), total, listMessage(total, "AI credential", "AI credentials")), nil
 }
 
 func createAICredential(client *taikungoclient.Client, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
@@ -93,5 +93,5 @@ func dropdownAICredentials(client *taikungoclient.Client, args SearchListArgs) (
 		return errorResp, nil
 	}
 
-	return createListResponse("aiCredentials", items, len(items), listMessage(len(items), "AI credential", "AI credentials")), nil
+	return createListResponse("aiCredentials", compactAICredentialDropdown(items), len(items), listMessage(len(items), "AI credential", "AI credentials")), nil
 }

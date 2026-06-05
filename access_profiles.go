@@ -58,7 +58,7 @@ func listAccessProfiles(client *taikungoclient.Client, args SearchListArgs) (*mc
 			total = len(items)
 		}
 	}
-	return createListResponse("accessProfiles", items, total, listMessage(total, "access profile", "access profiles")), nil
+	return createListResponse("accessProfiles", toAccessProfileSummaries(items), total, listMessage(total, "access profile", "access profiles")), nil
 }
 
 func createAccessProfile(client *taikungoclient.Client, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
@@ -113,7 +113,7 @@ func dropdownAccessProfiles(client *taikungoclient.Client, args SearchListArgs) 
 		return errorResp, nil
 	}
 
-	return createListResponse("accessProfiles", items, len(items), listMessage(len(items), "access profile", "access profiles")), nil
+	return createListResponse("accessProfiles", compactDropdownRefs(items), len(items), listMessage(len(items), "access profile", "access profiles")), nil
 }
 
 func lockAccessProfile(client *taikungoclient.Client, args LockModeArgs) (*mcp_golang.ToolResponse, error) {

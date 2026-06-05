@@ -136,7 +136,7 @@ func TestBuildLokiLogsQueryRejectsInvalidLogQL(t *testing.T) {
 	if !strings.Contains(result.Error, "Invalid LogQL query") {
 		t.Fatalf("expected clear LogQL validation error, got %+v", result)
 	}
-	if !strings.Contains(result.Details, "valid LogQL expression") {
+	if !strings.Contains(result.Details, "LogQL expression") {
 		t.Fatalf("expected LogQL guidance, got %+v", result)
 	}
 }
@@ -294,7 +294,7 @@ func TestQueryProjectPrometheusMetricsRejectsInvalidPromQL(t *testing.T) {
 	if !strings.Contains(result.Error, "Invalid PromQL query") {
 		t.Fatalf("expected PromQL validation error, got %+v", result)
 	}
-	if !strings.Contains(result.Details, "valid PromQL expression") {
+	if !strings.Contains(result.Details, "PromQL expression") {
 		t.Fatalf("expected PromQL guidance, got %+v", result)
 	}
 }

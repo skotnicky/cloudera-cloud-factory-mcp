@@ -126,7 +126,7 @@ func listOrganizations(client *taikungoclient.Client, args SearchListArgs) (*mcp
 			empty := []taikuncore.OrganizationDropdownDto{}
 			return createListResponse("organizations", empty, 0, listMessage(0, "organization", "organizations")), nil
 		}
-		return createListResponse("organizations", *items, len(*items), listMessage(len(*items), "organization", "organizations")), nil
+		return createListResponse("organizations", compactJSON(*items), len(*items), listMessage(len(*items), "organization", "organizations")), nil
 	}
 
 	req := client.Client.OrganizationsAPI.OrganizationsList(context.Background())
@@ -169,7 +169,7 @@ func listOrganizations(client *taikungoclient.Client, args SearchListArgs) (*mcp
 			total = len(items)
 		}
 	}
-	return createListResponse("organizations", items, total, listMessage(total, "organization", "organizations")), nil
+	return createListResponse("organizations", compactJSON(items), total, listMessage(total, "organization", "organizations")), nil
 }
 
 func createOrganization(client *taikungoclient.Client, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
@@ -197,7 +197,7 @@ func getOrganizationDetails(client *taikungoclient.Client, args IDArgs) (*mcp_go
 	}
 
 	return createJSONResponse(map[string]interface{}{
-		"organization":   result,
+		"organization":   compactJSON(result),
 		"message":        "Retrieved organization details",
 		"success":        true,
 		"organizationId": args.ID,
@@ -251,7 +251,7 @@ func listIdentityGroups(client *taikungoclient.Client, args SearchListArgs) (*mc
 	if result != nil {
 		items = result.GetData()
 	}
-	return createListResponse("identityGroups", items, len(items), listMessage(len(items), "identity group", "identity groups")), nil
+	return createListResponse("identityGroups", compactJSON(items), len(items), listMessage(len(items), "identity group", "identity groups")), nil
 }
 
 func createIdentityGroup(client *taikungoclient.Client, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
@@ -277,7 +277,7 @@ func getIdentityGroupDetails(client *taikungoclient.Client, args DomainScopedIDA
 	}
 
 	return createJSONResponse(map[string]interface{}{
-		"identityGroup": result,
+		"identityGroup": compactJSON(result),
 		"message":       "Retrieved identity group details",
 		"success":       true,
 		"domainId":      args.DomainID,
@@ -298,7 +298,7 @@ func listIdentityGroupOrganizations(client *taikungoclient.Client, args DomainSc
 	if result != nil {
 		items = result.GetOrganizations()
 	}
-	return createListResponse("organizations", items, len(items), listMessage(len(items), "organization", "organizations")), nil
+	return createListResponse("organizations", compactJSON(items), len(items), listMessage(len(items), "organization", "organizations")), nil
 }
 
 func listIdentityGroupUsers(client *taikungoclient.Client, args DomainScopedIDArgs) (*mcp_golang.ToolResponse, error) {
@@ -314,7 +314,7 @@ func listIdentityGroupUsers(client *taikungoclient.Client, args DomainScopedIDAr
 	if result != nil {
 		items = result.GetUsers()
 	}
-	return createListResponse("users", items, len(items), listMessage(len(items), "user", "users")), nil
+	return createListResponse("users", compactJSON(items), len(items), listMessage(len(items), "user", "users")), nil
 }
 
 func listAvailableIdentityGroupOrganizations(client *taikungoclient.Client, args DomainScopedIDArgs) (*mcp_golang.ToolResponse, error) {
@@ -332,7 +332,7 @@ func listAvailableIdentityGroupOrganizations(client *taikungoclient.Client, args
 		empty := []taikuncore.CommonDropdownDto{}
 		return createListResponse("availableOrganizations", empty, 0, listMessage(0, "available organization", "available organizations")), nil
 	}
-	return createListResponse("availableOrganizations", *items, len(*items), listMessage(len(*items), "available organization", "available organizations")), nil
+	return createListResponse("availableOrganizations", compactJSON(*items), len(*items), listMessage(len(*items), "available organization", "available organizations")), nil
 }
 
 func addOrganizationsToIdentityGroup(client *taikungoclient.Client, args IDPayloadArgs) (*mcp_golang.ToolResponse, error) {
@@ -403,7 +403,7 @@ func listAvailableIdentityGroupUsers(client *taikungoclient.Client, args DomainS
 		empty := []taikuncore.CommonStringBasedDropdownDto{}
 		return createListResponse("availableUsers", empty, 0, listMessage(0, "available user", "available users")), nil
 	}
-	return createListResponse("availableUsers", *items, len(*items), listMessage(len(*items), "available user", "available users")), nil
+	return createListResponse("availableUsers", compactJSON(*items), len(*items), listMessage(len(*items), "available user", "available users")), nil
 }
 
 func addUsersToIdentityGroup(client *taikungoclient.Client, args IDPayloadArgs) (*mcp_golang.ToolResponse, error) {
@@ -477,7 +477,7 @@ func listUsers(client *taikungoclient.Client, args SearchListArgs) (*mcp_golang.
 			}
 		}
 
-		response["users"] = items
+		response["users"] = compactJSON(items)
 		response["total"] = total
 		response["message"] = listMessage(total, "user", "users")
 		return createJSONResponse(response), nil
@@ -509,7 +509,7 @@ func listUsers(client *taikungoclient.Client, args SearchListArgs) (*mcp_golang.
 		}
 	}
 
-	response["users"] = items
+	response["users"] = compactJSON(items)
 	response["total"] = total
 	response["message"] = listMessage(total, "user", "users")
 	return createJSONResponse(response), nil
@@ -538,7 +538,7 @@ func getUserDetails(client *taikungoclient.Client, args DomainScopedStringIDArgs
 	}
 
 	return createJSONResponse(map[string]interface{}{
-		"user":     result,
+		"user":     compactJSON(result),
 		"message":  "Retrieved user details",
 		"success":  true,
 		"domainId": args.DomainID,

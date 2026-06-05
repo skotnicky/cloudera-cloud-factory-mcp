@@ -246,6 +246,7 @@ func enableProjectMonitoring(client *taikungoclient.Client, args ProjectIDArgs) 
 	httpResponse, err := client.Client.ProjectDeploymentAPI.ProjectDeploymentEnableMonitoring(context.Background()).
 		DeploymentEnableMonitoringCommand(*command).
 		Execute()
+	invalidateCachedMonitoringStatus(args.ProjectID)
 	return finalizeAction(httpResponse, err, "enable project monitoring", fmt.Sprintf("Monitoring enabled for project %d", args.ProjectID))
 }
 
@@ -256,6 +257,7 @@ func disableProjectMonitoring(client *taikungoclient.Client, args ProjectIDArgs)
 	httpResponse, err := client.Client.ProjectDeploymentAPI.ProjectDeploymentDisableMonitoring(context.Background()).
 		DeploymentDisableMonitoringCommand(*command).
 		Execute()
+	invalidateCachedMonitoringStatus(args.ProjectID)
 	return finalizeAction(httpResponse, err, "disable project monitoring", fmt.Sprintf("Monitoring disabled for project %d", args.ProjectID))
 }
 

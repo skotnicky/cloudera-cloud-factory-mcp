@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/itera-io/taikungoclient"
@@ -66,8 +67,7 @@ type UninstallAppArgs struct {
 }
 
 // waitForAppReady waits for an application to reach READY status or be deleted
-func waitForAppReady(client *taikungoclient.Client, projectAppID int32, timeoutSeconds int32, waitDeleted bool, readyStabilizationSeconds int32) error {
-	ctx := context.Background()
+func waitForAppReady(ctx context.Context, client *taikungoclient.Client, projectAppID int32, timeoutSeconds int32, waitDeleted bool, readyStabilizationSeconds int32) error {
 	timeout := time.Duration(timeoutSeconds) * time.Second
 	if timeoutSeconds == 0 {
 		timeout = 60 * time.Second // Default 60 seconds
@@ -129,8 +129,12 @@ func waitForAppReady(client *taikungoclient.Client, projectAppID int32, timeoutS
 			}
 		}
 
-		// Wait before next poll
-		time.Sleep(10 * time.Second)
+		// Wait before next poll, but stop promptly if the request is cancelled.
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait cancelled for application ID %d: %w", projectAppID, ctx.Err())
+		case <-time.After(10 * time.Second):
+		}
 	}
 }
 
@@ -165,9 +169,7 @@ func fetchProjectAppStatus(ctx context.Context, client *taikungoclient.Client, p
 	return "", false, response, err
 }
 
-func syncProjectApp(client *taikungoclient.Client, projectAppID int32, timeout int32) error {
-	ctx := context.Background()
-
+func syncProjectApp(ctx context.Context, client *taikungoclient.Client, projectAppID int32, timeout int32) error {
 	syncCmd := taikuncore.NewSyncProjectAppCommand()
 	syncCmd.SetProjectAppId(projectAppID)
 	if timeout > 0 {
@@ -206,8 +208,7 @@ func resolveInstallAppTTL(ttl int32) (int32, bool, string) {
 	return ttl, false, ""
 }
 
-func installApp(client *taikungoclient.Client, args InstallAppArgs) (*mcp_golang.ToolResponse, error) {
-	ctx := context.Background()
+func installApp(ctx context.Context, client *taikungoclient.Client, args InstallAppArgs) (*mcp_golang.ToolResponse, error) {
 	installTimeout, timeoutDefaulted := resolveInstallAppTimeout(args.Timeout)
 	installTTL, ttlDefaulted, ttlValidationError := resolveInstallAppTTL(args.TTL)
 	if ttlValidationError != "" {
@@ -319,16 +320,15 @@ func installApp(client *taikungoclient.Client, args InstallAppArgs) (*mcp_golang
 			waitTimeout = 60 // Default 60 seconds
 		}
 
-		err := waitForAppReady(client, projectAppID, waitTimeout, false, args.ReadyStabilizationSeconds)
+		err := waitForAppReady(ctx, client, projectAppID, waitTimeout, false, args.ReadyStabilizationSeconds)
 		if err != nil {
 			if args.RetrySyncOnFailure {
-				ctx := context.Background()
 				details, detailsResponse, detailsErr := client.Client.ProjectAppsAPI.ProjectappDetails(ctx, projectAppID).Execute()
 				if detailsErr == nil && details != nil && string(details.GetStatus()) == "Failed" {
 					logger.Printf("Application '%s' (ID: %d) failed, attempting one sync retry", args.Name, projectAppID)
-					syncErr := syncProjectApp(client, projectAppID, waitTimeout)
+					syncErr := syncProjectApp(ctx, client, projectAppID, waitTimeout)
 					if syncErr == nil {
-						retryWaitErr := waitForAppReady(client, projectAppID, waitTimeout, false, args.ReadyStabilizationSeconds)
+						retryWaitErr := waitForAppReady(ctx, client, projectAppID, waitTimeout, false, args.ReadyStabilizationSeconds)
 						if retryWaitErr == nil {
 							resultMsg = fmt.Sprintf("Application '%s' (ID: %d) installed successfully after sync retry in namespace '%s'", args.Name, projectAppID, args.Namespace)
 							logger.Printf("Application '%s' (ID: %d) is now ready after sync retry", args.Name, projectAppID)
@@ -597,9 +597,6 @@ func getApp(client *taikungoclient.Client, args GetAppArgs) (*mcp_golang.ToolRes
 		Logo              string         `json:"logo,omitempty"`
 		Parameters        []AppParameter `json:"parameters,omitempty"`
 		Values            string         `json:"values,omitempty"`
-		HelmResult        string         `json:"helmResult,omitempty"`
-		Logs              string         `json:"logs,omitempty"`
-		ReleaseNotes      string         `json:"releaseNotes,omitempty"`
 		TTL               int32          `json:"ttl"`
 	}
 
@@ -644,26 +641,15 @@ func getApp(client *taikungoclient.Client, args GetAppArgs) (*mcp_golang.ToolRes
 		appDetail.Values = appDetails.GetValues()
 	}
 
-	if appDetails.GetHelmResult() != "" {
-		appDetail.HelmResult = appDetails.GetHelmResult()
-	}
-
-	if appDetails.GetLogs() != "" {
-		appDetail.Logs = appDetails.GetLogs()
-	}
-
-	if appDetails.GetReleaseNotes() != "" {
-		appDetail.ReleaseNotes = appDetails.GetReleaseNotes()
-	}
+	// helmResult, logs and releaseNotes are large/opaque (releaseNotes is
+	// base64) and are intentionally omitted here to keep the response compact.
 
 	appDetail.TTL = appDetails.GetTtl()
 
 	return createJSONResponse(appDetail), nil
 }
 
-func updateSyncApp(client *taikungoclient.Client, args UpdateSyncAppArgs) (*mcp_golang.ToolResponse, error) {
-	ctx := context.Background()
-
+func updateSyncApp(ctx context.Context, client *taikungoclient.Client, args UpdateSyncAppArgs) (*mcp_golang.ToolResponse, error) {
 	var resultMsg string
 
 	// First, get the app details to check autosync status
@@ -794,7 +780,7 @@ func uninstallApp(client *taikungoclient.Client, args UninstallAppArgs) (*mcp_go
 	return createJSONResponse(successResp), nil
 }
 
-func waitForApp(client *taikungoclient.Client, args WaitForAppArgs) (*mcp_golang.ToolResponse, error) {
+func waitForApp(ctx context.Context, client *taikungoclient.Client, args WaitForAppArgs) (*mcp_golang.ToolResponse, error) {
 	timeout := args.Timeout
 	if timeout == 0 {
 		timeout = 60 // Default 60s for creation
@@ -802,6 +788,8 @@ func waitForApp(client *taikungoclient.Client, args WaitForAppArgs) (*mcp_golang
 			timeout = 30 // Default 30s for deletion
 		}
 	}
+	cappedTimeout, capped := effectiveWaitTimeout(int(timeout))
+	timeout = int32(cappedTimeout)
 
 	if args.WaitDeleted {
 		logger.Printf("Waiting for application ID %d to be deleted (timeout: %d seconds)", args.ProjectAppId, timeout)
@@ -809,8 +797,16 @@ func waitForApp(client *taikungoclient.Client, args WaitForAppArgs) (*mcp_golang
 		logger.Printf("Waiting for application ID %d to be ready (timeout: %d seconds)", args.ProjectAppId, timeout)
 	}
 
-	err := waitForAppReady(client, args.ProjectAppId, timeout, args.WaitDeleted, args.ReadyStabilizationSeconds)
+	err := waitForAppReady(ctx, client, args.ProjectAppId, timeout, args.WaitDeleted, args.ReadyStabilizationSeconds)
 	if err != nil {
+		if capped && strings.Contains(err.Error(), "timeout waiting for application") {
+			return createJSONResponse(map[string]interface{}{
+				"success":      false,
+				"status":       "pending",
+				"projectAppId": args.ProjectAppId,
+				"message":      fmt.Sprintf("Application %d is not ready yet after %d seconds. HTTP waits are capped at %d seconds to avoid long-held requests; call wait-for-app again or poll get-app.", args.ProjectAppId, timeout, maxHTTPWaitSeconds),
+			}), nil
+		}
 		return createJSONResponse(ErrorResponse{
 			Error: err.Error(),
 		}), nil

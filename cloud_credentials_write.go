@@ -3,11 +3,95 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/itera-io/taikungoclient"
 	taikuncore "github.com/itera-io/taikungoclient/client"
 	mcp_golang "github.com/metoro-io/mcp-golang"
 )
+
+// CloudCredentialWriteArgs is the consolidated argument set for the
+// create-cloud-credential / update-cloud-credential tools. A single
+// cloudType discriminator replaces the per-provider create/update tools,
+// shrinking the tool manifest while keeping every provider reachable.
+type CloudCredentialWriteArgs struct {
+	CloudType string `json:"cloudType" jsonschema:"required,description=Cloud type: aws, azure, openstack, proxmox, vsphere, zadara (and generic-kubernetes for update)"`
+	Payload   string `json:"payload" jsonschema:"required,description=JSON payload matching the underlying create/update command for the chosen cloudType"`
+}
+
+func normalizeCloudType(cloudType string) string {
+	normalized := strings.ToLower(strings.TrimSpace(cloudType))
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	switch normalized {
+	case "generickubernetes", "generic-kubernetes", "k8s", "kubernetes":
+		return "generic-kubernetes"
+	default:
+		return normalized
+	}
+}
+
+// googleCloudCredentialNotSupportedResponse explains that Google/GCP credentials
+// are not manageable through the JSON-payload create/update tools: the Google
+// create API requires a multipart service-account key file upload and has no
+// update endpoint, so it does not fit this tool's command-body model.
+func googleCloudCredentialNotSupportedResponse(operation string) *mcp_golang.ToolResponse {
+	return createJSONResponse(ErrorResponse{
+		Error:   fmt.Sprintf("Google/GCP cloud credentials are not supported by %s", operation),
+		Details: "The Google cloud credential API requires a multipart service-account key file upload (and has no update endpoint), so it cannot be driven through a JSON payload here. Create or update Google credentials in the Cloudera Cloud Factory UI.",
+	})
+}
+
+func createCloudCredential(client *taikungoclient.Client, args CloudCredentialWriteArgs) (*mcp_golang.ToolResponse, error) {
+	payload := JSONPayloadArgs{Payload: args.Payload}
+	switch normalizeCloudType(args.CloudType) {
+	case "aws":
+		return createAWSCloudCredential(client, payload)
+	case "azure":
+		return createAzureCloudCredential(client, payload)
+	case "openstack":
+		return createOpenStackCloudCredential(client, payload)
+	case "proxmox":
+		return createProxmoxCloudCredential(client, payload)
+	case "vsphere":
+		return createVSphereCloudCredential(client, payload)
+	case "zadara":
+		return createZadaraCloudCredential(client, payload)
+	case "google", "gcp":
+		return googleCloudCredentialNotSupportedResponse("create-cloud-credential"), nil
+	default:
+		return createJSONResponse(ErrorResponse{
+			Error:   fmt.Sprintf("unsupported cloudType %q for create-cloud-credential", args.CloudType),
+			Details: "Supported cloudType values: aws, azure, openstack, proxmox, vsphere, zadara.",
+		}), nil
+	}
+}
+
+func updateCloudCredential(client *taikungoclient.Client, args CloudCredentialWriteArgs) (*mcp_golang.ToolResponse, error) {
+	payload := JSONPayloadArgs{Payload: args.Payload}
+	switch normalizeCloudType(args.CloudType) {
+	case "aws":
+		return updateAWSCloudCredential(client, payload)
+	case "azure":
+		return updateAzureCloudCredential(client, payload)
+	case "openstack":
+		return updateOpenStackCloudCredential(client, payload)
+	case "proxmox":
+		return updateProxmoxCloudCredential(client, payload)
+	case "vsphere":
+		return updateVSphereCloudCredential(client, payload)
+	case "zadara":
+		return updateZadaraCloudCredential(client, payload)
+	case "generic-kubernetes":
+		return updateGenericKubernetesCloudCredential(client, payload)
+	case "google", "gcp":
+		return googleCloudCredentialNotSupportedResponse("update-cloud-credential"), nil
+	default:
+		return createJSONResponse(ErrorResponse{
+			Error:   fmt.Sprintf("unsupported cloudType %q for update-cloud-credential", args.CloudType),
+			Details: "Supported cloudType values: aws, azure, openstack, proxmox, vsphere, zadara, generic-kubernetes.",
+		}), nil
+	}
+}
 
 func createAWSCloudCredential(client *taikungoclient.Client, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
 	command, errorResp := decodePayload[taikuncore.CreateAwsCloudCommand](args.Payload)
@@ -169,7 +253,7 @@ func updateGenericKubernetesCloudCredential(client *taikungoclient.Client, args 
 		return errorResp, nil
 	}
 	return createJSONResponse(map[string]interface{}{
-		"result":  result,
+		"result":  compactJSON(result),
 		"message": "Generic Kubernetes cloud credential updated successfully",
 		"success": true,
 	}), nil

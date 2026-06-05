@@ -24,7 +24,7 @@ type ImageListArgs struct {
 	Offer         string `json:"offer,omitempty" jsonschema:"description=Azure offer for azure public image lookup"`
 	Sku           string `json:"sku,omitempty" jsonschema:"description=Azure sku for azure public image lookup"`
 	Type          string `json:"type,omitempty" jsonschema:"description=Google image type for google public image lookup"`
-	Payload       string `json:"payload,omitempty" jsonschema:"description=Optional JSON payload for providers that require a POST body, such as aws public image listing"`
+	Payload       string `json:"payload,omitempty" jsonschema:"description=JSON payload (AwsImagesPostListCommand) for providers that require a POST body. REQUIRED for aws public images - they are listed from a request body (owners/filters/architecture), not from cloudId alone; cloudId is ignored for aws public mode."`
 }
 
 func listImages(client *taikungoclient.Client, args ImageListArgs) (*mcp_golang.ToolResponse, error) {
@@ -69,7 +69,7 @@ func listAWSImages(client *taikungoclient.Client, args ImageListArgs, mode strin
 		if errorResp := checkResponse(httpResponse, "list common AWS images"); errorResp != nil {
 			return errorResp, nil
 		}
-		return createListResponse("images", items, len(items), listMessage(len(items), "image", "images")), nil
+		return createListResponse("images", compactJSON(items), len(items), listMessage(len(items), "image", "images")), nil
 	case "personal":
 		req := client.Client.ImagesAPI.ImagesAwsPersonalImages(context.Background(), args.CloudID)
 		if args.ProjectID > 0 {
@@ -82,15 +82,17 @@ func listAWSImages(client *taikungoclient.Client, args ImageListArgs, mode strin
 		if errorResp := checkResponse(httpResponse, "list personal AWS images"); errorResp != nil {
 			return errorResp, nil
 		}
-		return createListResponse("images", items, len(items), listMessage(len(items), "image", "images")), nil
+		return createListResponse("images", compactJSON(items), len(items), listMessage(len(items), "image", "images")), nil
 	case "public":
-		command := taikuncore.NewAwsImagesPostListCommand()
-		if strings.TrimSpace(args.Payload) != "" {
-			decoded, errorResp := decodePayload[taikuncore.AwsImagesPostListCommand](args.Payload)
-			if errorResp != nil {
-				return errorResp, nil
-			}
-			command = decoded
+		if strings.TrimSpace(args.Payload) == "" {
+			return createJSONResponse(ErrorResponse{
+				Error:   "aws public images require a payload body",
+				Details: "Provide a JSON payload (AwsImagesPostListCommand) with owners/filters/architecture; aws public images are listed from a request body, not from cloudId alone.",
+			}), nil
+		}
+		command, errorResp := decodePayload[taikuncore.AwsImagesPostListCommand](args.Payload)
+		if errorResp != nil {
+			return errorResp, nil
 		}
 		result, httpResponse, err := client.Client.ImagesAPI.ImagesAwsImagesList(context.Background()).
 			AwsImagesPostListCommand(*command).
@@ -102,7 +104,7 @@ func listAWSImages(client *taikungoclient.Client, args ImageListArgs, mode strin
 			return errorResp, nil
 		}
 		return createJSONResponse(map[string]interface{}{
-			"images":  result,
+			"images":  compactJSON(result),
 			"message": "Loaded AWS public images",
 			"success": true,
 		}), nil
@@ -125,7 +127,7 @@ func listAzureImages(client *taikungoclient.Client, args ImageListArgs, mode str
 		if errorResp := checkResponse(httpResponse, "list common Azure images"); errorResp != nil {
 			return errorResp, nil
 		}
-		return createListResponse("images", items, len(items), listMessage(len(items), "image", "images")), nil
+		return createListResponse("images", compactJSON(items), len(items), listMessage(len(items), "image", "images")), nil
 	case "personal":
 		req := client.Client.ImagesAPI.ImagesAzurePersonalImages(context.Background(), args.CloudID)
 		if args.ProjectID > 0 {
@@ -138,7 +140,7 @@ func listAzureImages(client *taikungoclient.Client, args ImageListArgs, mode str
 		if errorResp := checkResponse(httpResponse, "list personal Azure images"); errorResp != nil {
 			return errorResp, nil
 		}
-		return createListResponse("images", items, len(items), listMessage(len(items), "image", "images")), nil
+		return createListResponse("images", compactJSON(items), len(items), listMessage(len(items), "image", "images")), nil
 	case "public":
 		result, httpResponse, err := client.Client.ImagesAPI.ImagesAzureImages(
 			context.Background(), args.CloudID, args.PublisherName, args.Offer, args.Sku,
@@ -150,7 +152,7 @@ func listAzureImages(client *taikungoclient.Client, args ImageListArgs, mode str
 			return errorResp, nil
 		}
 		return createJSONResponse(map[string]interface{}{
-			"images":  result,
+			"images":  compactJSON(result),
 			"message": "Loaded Azure public images",
 			"success": true,
 		}), nil
@@ -173,7 +175,7 @@ func listGoogleImages(client *taikungoclient.Client, args ImageListArgs, mode st
 		if errorResp := checkResponse(httpResponse, "list common Google images"); errorResp != nil {
 			return errorResp, nil
 		}
-		return createListResponse("images", items, len(items), listMessage(len(items), "image", "images")), nil
+		return createListResponse("images", compactJSON(items), len(items), listMessage(len(items), "image", "images")), nil
 	case "public":
 		result, httpResponse, err := client.Client.ImagesAPI.ImagesGoogleImages(context.Background(), args.CloudID, args.Type).Execute()
 		if err != nil {
@@ -183,7 +185,7 @@ func listGoogleImages(client *taikungoclient.Client, args ImageListArgs, mode st
 			return errorResp, nil
 		}
 		return createJSONResponse(map[string]interface{}{
-			"images":  result,
+			"images":  compactJSON(result),
 			"message": "Loaded Google images",
 			"success": true,
 		}), nil
@@ -221,7 +223,7 @@ func listOpenShiftImages(client *taikungoclient.Client, args ImageListArgs) (*mc
 		return errorResp, nil
 	}
 	return createJSONResponse(map[string]interface{}{
-		"images":  result,
+		"images":  compactJSON(result),
 		"message": "Loaded OpenShift images",
 		"success": true,
 	}), nil
@@ -259,7 +261,7 @@ func listOpenStackImages(client *taikungoclient.Client, args ImageListArgs) (*mc
 		return errorResp, nil
 	}
 	return createJSONResponse(map[string]interface{}{
-		"images":  result,
+		"images":  compactJSON(result),
 		"message": "Loaded OpenStack images",
 		"success": true,
 	}), nil
@@ -294,7 +296,7 @@ func listProxmoxImages(client *taikungoclient.Client, args ImageListArgs) (*mcp_
 		return errorResp, nil
 	}
 	return createJSONResponse(map[string]interface{}{
-		"images":  result,
+		"images":  compactJSON(result),
 		"message": "Loaded Proxmox images",
 		"success": true,
 	}), nil
@@ -329,7 +331,7 @@ func listVSphereImages(client *taikungoclient.Client, args ImageListArgs) (*mcp_
 		return errorResp, nil
 	}
 	return createJSONResponse(map[string]interface{}{
-		"images":  result,
+		"images":  compactJSON(result),
 		"message": "Loaded vSphere images",
 		"success": true,
 	}), nil
@@ -349,7 +351,7 @@ func listZadaraImages(client *taikungoclient.Client, args ImageListArgs, mode st
 		if errorResp := checkResponse(httpResponse, "list personal Zadara images"); errorResp != nil {
 			return errorResp, nil
 		}
-		return createListResponse("images", items, len(items), listMessage(len(items), "image", "images")), nil
+		return createListResponse("images", compactJSON(items), len(items), listMessage(len(items), "image", "images")), nil
 	default:
 		req := client.Client.ImagesAPI.ImagesZadaraImagesList(context.Background(), args.CloudID)
 		if args.Limit > 0 {
@@ -379,7 +381,7 @@ func listZadaraImages(client *taikungoclient.Client, args ImageListArgs, mode st
 			return errorResp, nil
 		}
 		return createJSONResponse(map[string]interface{}{
-			"images":  result,
+			"images":  compactJSON(result),
 			"message": "Loaded Zadara images",
 			"success": true,
 		}), nil
@@ -402,7 +404,7 @@ func getImageDetails(client *taikungoclient.Client, args JSONPayloadArgs) (*mcp_
 		return errorResp, nil
 	}
 	return createJSONResponse(map[string]interface{}{
-		"details": details,
+		"details": compactJSON(details),
 		"message": "Loaded image details",
 		"success": true,
 	}), nil
@@ -474,5 +476,5 @@ func listSelectedProjectImages(client *taikungoclient.Client, args ProjectSearch
 			total = len(result.GetData())
 		}
 	}
-	return createListResponse("images", items, total, listMessage(total, "image", "images")), nil
+	return createListResponse("images", compactJSON(items), total, listMessage(total, "image", "images")), nil
 }

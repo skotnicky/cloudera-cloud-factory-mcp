@@ -312,7 +312,7 @@ func addServerToProject(client *taikungoclient.Client, args AddServerArgs) (*mcp
 	}
 }
 
-func createCluster(client *taikungoclient.Client, args CreateClusterArgs) (*mcp_golang.ToolResponse, error) {
+func createCluster(ctx context.Context, client *taikungoclient.Client, args CreateClusterArgs) (*mcp_golang.ToolResponse, error) {
 	if strings.TrimSpace(args.Name) == "" {
 		return createJSONResponse(ErrorResponse{Error: "Cluster name is required"}), nil
 	}
@@ -460,7 +460,7 @@ func createCluster(client *taikungoclient.Client, args CreateClusterArgs) (*mcp_
 		if waitTimeout <= 0 {
 			waitTimeout = defaultClusterWaitTimeout
 		}
-		waitResp, waitErr := waitForProject(client, WaitForProjectArgs{
+		waitResp, waitErr := waitForProject(ctx, client, WaitForProjectArgs{
 			ProjectId: projectID,
 			Timeout:   waitTimeout,
 		})
@@ -1032,8 +1032,10 @@ func listFlavors(client *taikungoclient.Client, args ListFlavorsArgs) (*mcp_gola
 	}
 
 	var flavors []FlavorSummary
-	if result != nil && result.Data != nil {
-		for _, f := range result.Data {
+	total := int32(0)
+	if result != nil {
+		total = result.GetTotalCount()
+		for _, f := range result.GetData() {
 			flavors = append(flavors, FlavorSummary{
 				Name: f.GetName(),
 				CPU:  f.GetCpu(),
@@ -1041,11 +1043,21 @@ func listFlavors(client *taikungoclient.Client, args ListFlavorsArgs) (*mcp_gola
 			})
 		}
 	}
+	if total == 0 {
+		total = int32(len(flavors))
+	}
+
+	// Report the API's total so a truncated page is not mistaken for the full
+	// set (the flavors endpoint pages server-side).
+	message := fmt.Sprintf("Found %d flavors", total)
+	if int32(len(flavors)) < total {
+		message = fmt.Sprintf("Showing %d of %d flavors; use limit/offset or search to page or narrow the results", len(flavors), total)
+	}
 
 	response := FlavorListResponse{
 		Flavors: flavors,
-		Total:   int32(len(flavors)),
-		Message: fmt.Sprintf("Found %d flavors", len(flavors)),
+		Total:   total,
+		Message: message,
 	}
 
 	return createJSONResponse(response), nil

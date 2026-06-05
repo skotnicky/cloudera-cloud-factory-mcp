@@ -56,7 +56,7 @@ func listAlertingProfiles(client *taikungoclient.Client, args SearchListArgs) (*
 			total = len(items)
 		}
 	}
-	return createListResponse("alertingProfiles", items, total, listMessage(total, "alerting profile", "alerting profiles")), nil
+	return createListResponse("alertingProfiles", toAlertingProfileSummaries(items), total, listMessage(total, "alerting profile", "alerting profiles")), nil
 }
 
 func createAlertingProfile(client *taikungoclient.Client, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
@@ -104,7 +104,7 @@ func dropdownAlertingProfiles(client *taikungoclient.Client, args SearchListArgs
 	if errorResp := checkResponse(httpResponse, "list alerting profile dropdown values"); errorResp != nil {
 		return errorResp, nil
 	}
-	return createListResponse("alertingProfiles", items, len(items), listMessage(len(items), "alerting profile", "alerting profiles")), nil
+	return createListResponse("alertingProfiles", compactDropdownRefs(items), len(items), listMessage(len(items), "alerting profile", "alerting profiles")), nil
 }
 
 func lockAlertingProfile(client *taikungoclient.Client, args LockModeArgs) (*mcp_golang.ToolResponse, error) {
@@ -200,7 +200,7 @@ func listAlertingIntegrations(client *taikungoclient.Client, args IDPayloadArgs)
 	if errorResp := checkResponse(httpResponse, "list alerting integrations"); errorResp != nil {
 		return errorResp, nil
 	}
-	return createListResponse("alertingIntegrations", items, len(items), listMessage(len(items), "alerting integration", "alerting integrations")), nil
+	return createListResponse("alertingIntegrations", compactJSON(items), len(items), listMessage(len(items), "alerting integration", "alerting integrations")), nil
 }
 
 func createAlertingIntegration(client *taikungoclient.Client, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {

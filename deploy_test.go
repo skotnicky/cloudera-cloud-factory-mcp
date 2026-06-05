@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -375,9 +376,9 @@ func TestValidateProjectSizingForCommit(t *testing.T) {
 	cloudID := int32(77)
 
 	tests := []struct {
-		name            string
-		monitoring      bool
-		servers         []taikuncore.ServerListDto
+		name       string
+		monitoring bool
+		servers    []taikuncore.ServerListDto
 		// one entry per kubemaster/kubeworker in servers order; each entry is the flavors the search returns
 		flavorResponses [][]taikuncore.FlavorsListDto
 		wantErrContains string
@@ -637,7 +638,7 @@ func TestCreateClusterOrchestratesProjectNodesAndCommit(t *testing.T) {
 	defer cleanup()
 
 	wait := false
-	resp, err := createCluster(client, CreateClusterArgs{
+	resp, err := createCluster(context.Background(), client, CreateClusterArgs{
 		Name:                clusterName,
 		CloudCredentialID:   cloudID,
 		KubernetesProfileID: 5001,
@@ -681,7 +682,7 @@ func TestCreateClusterFlavorFailureReportsCreatedProjectContext(t *testing.T) {
 	defer cleanup()
 
 	wait := false
-	resp, err := createCluster(client, CreateClusterArgs{
+	resp, err := createCluster(context.Background(), client, CreateClusterArgs{
 		Name:                "cluster-flavor-failure",
 		CloudCredentialID:   cloudID,
 		KubernetesProfileID: 5001,

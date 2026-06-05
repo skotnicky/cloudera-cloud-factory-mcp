@@ -60,6 +60,69 @@ func deleteProjectErrorResponse(projectID int32, httpResponse *http.Response, er
 func listProjects(client *taikungoclient.Client, args ListProjectsArgs) (*mcp_golang.ToolResponse, error) {
 	ctx := context.Background()
 
+	// VirtualClustersOnly is a client-side filter the list API does not support,
+	// so that path must scan; the common path lets the API paginate to avoid
+	// fetching every project on each call.
+	if args.VirtualClustersOnly {
+		return listVirtualClusterProjects(ctx, client, args)
+	}
+
+	req := client.Client.ProjectsAPI.ProjectsList(ctx)
+	if args.Limit > 0 {
+		req = req.Limit(args.Limit)
+	}
+	if args.Offset > 0 {
+		req = req.Offset(args.Offset)
+	}
+	if args.Search != "" {
+		req = req.Search(args.Search)
+	}
+	if args.HealthyOnly {
+		req = req.Healthy(true)
+	}
+
+	projectList, httpResponse, err := req.Execute()
+	if err != nil {
+		return listProjectsErrorResponse(httpResponse, err), nil
+	}
+	if errorResp := checkResponse(httpResponse, "list projects"); errorResp != nil {
+		return errorResp, nil
+	}
+
+	var data []taikuncore.ProjectListDetailDto
+	total := 0
+	if projectList != nil {
+		data = projectList.Data
+		total = int(projectList.GetTotalCount())
+		if total == 0 {
+			total = len(data)
+		}
+	}
+
+	if len(data) == 0 {
+		message := "No projects found matching the specified criteria"
+		if total > 0 {
+			message = fmt.Sprintf("No projects found on the requested page (total matches: %d)", total)
+		}
+		return createJSONResponse(ProjectListResponse{
+			Projects:   []ProjectSummary{},
+			Total:      total,
+			FilterType: "all",
+			Message:    message,
+		}), nil
+	}
+
+	return createJSONResponse(ProjectListResponse{
+		Projects:   buildProjectSummaries(data),
+		Total:      total,
+		FilterType: "all",
+		Message:    fmt.Sprintf("Found %d projects", total),
+	}), nil
+}
+
+// listVirtualClusterProjects scans all projects (the list API cannot filter by
+// virtual cluster) and returns the virtual-cluster subset, paginated in memory.
+func listVirtualClusterProjects(ctx context.Context, client *taikungoclient.Client, args ListProjectsArgs) (*mcp_golang.ToolResponse, error) {
 	const pageSize int32 = 100
 
 	var filteredProjects []taikuncore.ProjectListDetailDto
@@ -67,7 +130,6 @@ func listProjects(client *taikungoclient.Client, args ListProjectsArgs) (*mcp_go
 		req := client.Client.ProjectsAPI.ProjectsList(ctx).
 			Limit(pageSize).
 			Offset(pageOffset)
-
 		if args.Search != "" {
 			req = req.Search(args.Search)
 		}
@@ -79,23 +141,15 @@ func listProjects(client *taikungoclient.Client, args ListProjectsArgs) (*mcp_go
 		if err != nil {
 			return listProjectsErrorResponse(httpResponse, err), nil
 		}
-
 		if errorResp := checkResponse(httpResponse, "list projects"); errorResp != nil {
 			return errorResp, nil
 		}
-
 		if projectList == nil || len(projectList.Data) == 0 {
 			break
 		}
 
 		for _, project := range projectList.Data {
-			include := true
-
-			if args.VirtualClustersOnly && !project.GetIsVirtualCluster() {
-				include = false
-			}
-
-			if include {
+			if project.GetIsVirtualCluster() {
 				filteredProjects = append(filteredProjects, project)
 			}
 		}
@@ -110,10 +164,24 @@ func listProjects(client *taikungoclient.Client, args ListProjectsArgs) (*mcp_go
 	}
 
 	pagedProjects := applyOffsetLimit(filteredProjects, args.Offset, args.Limit)
+	projects := buildProjectSummaries(pagedProjects)
 
-	// Prepare the response data.
-	var projects []ProjectSummary
-	for _, project := range pagedProjects {
+	message := fmt.Sprintf("Found %d virtual cluster projects", len(filteredProjects))
+	if len(projects) == 0 {
+		message = fmt.Sprintf("No projects found on the requested page (total matches: %d)", len(filteredProjects))
+	}
+
+	return createJSONResponse(ProjectListResponse{
+		Projects:   projects,
+		Total:      len(filteredProjects),
+		FilterType: "virtual-clusters",
+		Message:    message,
+	}), nil
+}
+
+func buildProjectSummaries(projectsData []taikuncore.ProjectListDetailDto) []ProjectSummary {
+	projects := make([]ProjectSummary, 0, len(projectsData))
+	for _, project := range projectsData {
 		projectSummary := ProjectSummary{
 			ID:                     project.GetId(),
 			Name:                   project.GetName(),
@@ -144,30 +212,7 @@ func listProjects(client *taikungoclient.Client, args ListProjectsArgs) (*mcp_go
 
 		projects = append(projects, projectSummary)
 	}
-
-	// Create response
-	var filterType string
-	var message string
-	if args.VirtualClustersOnly {
-		filterType = "virtual-clusters"
-		message = fmt.Sprintf("Found %d virtual cluster projects", len(filteredProjects))
-	} else {
-		filterType = "all"
-		message = fmt.Sprintf("Found %d projects", len(filteredProjects))
-	}
-
-	if len(projects) == 0 {
-		message = fmt.Sprintf("No projects found on the requested page (total matches: %d)", len(filteredProjects))
-	}
-
-	response := ProjectListResponse{
-		Projects:   projects,
-		Total:      len(filteredProjects),
-		FilterType: filterType,
-		Message:    message,
-	}
-
-	return createJSONResponse(response), nil
+	return projects
 }
 
 func getProjectType(project taikuncore.ProjectListDetailDto) string {
@@ -296,8 +341,7 @@ func deleteProject(client *taikungoclient.Client, args DeleteProjectArgs) (*mcp_
 	return createJSONResponse(successResp), nil
 }
 
-func waitForProject(client *taikungoclient.Client, args WaitForProjectArgs) (*mcp_golang.ToolResponse, error) {
-	ctx := context.Background()
+func waitForProject(ctx context.Context, client *taikungoclient.Client, args WaitForProjectArgs) (*mcp_golang.ToolResponse, error) {
 	timeout := 600 // Default 10 minutes for creation
 	if args.WaitDeleted {
 		timeout = 300 // Default 5 minutes for deletion
@@ -305,6 +349,7 @@ func waitForProject(client *taikungoclient.Client, args WaitForProjectArgs) (*mc
 	if args.Timeout > 0 {
 		timeout = int(args.Timeout)
 	}
+	timeout, capped := effectiveWaitTimeout(timeout)
 
 	if args.WaitDeleted {
 		logger.Printf("Waiting for project %d to be deleted (timeout: %d seconds)", args.ProjectId, timeout)
@@ -320,7 +365,19 @@ func waitForProject(client *taikungoclient.Client, args WaitForProjectArgs) (*mc
 
 	for {
 		select {
+		case <-ctx.Done():
+			return createJSONResponse(ErrorResponse{
+				Error: fmt.Sprintf("wait-for-project cancelled for project %d: %v", args.ProjectId, ctx.Err()),
+			}), nil
 		case <-timeoutChan:
+			if capped {
+				return createJSONResponse(map[string]interface{}{
+					"success":   false,
+					"status":    "pending",
+					"projectId": args.ProjectId,
+					"message":   fmt.Sprintf("Project %d is not ready yet after %d seconds. HTTP waits are capped at %d seconds to avoid long-held requests; call wait-for-project again or poll get-project-details.", args.ProjectId, timeout, maxHTTPWaitSeconds),
+				}), nil
+			}
 			return createJSONResponse(ErrorResponse{
 				Error: fmt.Sprintf("Timeout waiting for project %d after %d seconds", args.ProjectId, timeout),
 			}), nil

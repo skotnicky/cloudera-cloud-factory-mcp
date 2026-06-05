@@ -35,6 +35,12 @@ type RepositoryListResponse struct {
 }
 
 func listRepositories(client *taikungoclient.Client, args ListRepositoriesArgs) (*mcp_golang.ToolResponse, error) {
+	// Bound by default: this keeps fetchRepositories to a single page and skips
+	// the extra full private-repo fetch+merge that the unbounded path performs.
+	if args.Limit <= 0 {
+		args.Limit = 100
+	}
+
 	allRepositories, total, errorResp := fetchRepositories(client, args)
 	if errorResp != nil {
 		return errorResp, nil

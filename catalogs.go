@@ -871,6 +871,12 @@ func fetchAvailablePackages(client *taikungoclient.Client, search string, startO
 func listAvailableApps(client *taikungoclient.Client, args ListAvailableAppsArgs) (*mcp_golang.ToolResponse, error) {
 	ctx := context.Background()
 
+	// Bound by default so the no-filter path takes the single-page branch
+	// instead of looping every package page into memory.
+	if args.Limit <= 0 {
+		args.Limit = 100
+	}
+
 	type AvailableAppInfo struct {
 		PackageID      string `json:"packageId,omitempty"`
 		Name           string `json:"name,omitempty"`

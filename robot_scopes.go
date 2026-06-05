@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/itera-io/taikungoclient"
 	taikuncore "github.com/itera-io/taikungoclient/client"
@@ -14,7 +15,9 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-type RobotUserCapabilitiesArgs struct{}
+type RobotUserCapabilitiesArgs struct {
+	Detailed bool `json:"detailed,omitempty" jsonschema:"description=Return the full per-tool scope matrix instead of the compact allowed/blocked tool name lists (default: false)"`
+}
 
 type RobotUserContext struct {
 	UserID              string   `json:"userId,omitempty"`
@@ -47,6 +50,19 @@ type RobotUserCapabilitiesResponse struct {
 	ToolAccess []ToolScopeAccess `json:"toolAccess"`
 	Success    bool              `json:"success"`
 	Message    string            `json:"message"`
+}
+
+// RobotUserCapabilitiesCompactResponse is the default, low-context response for
+// robot-user-capabilities: it returns the allowed/blocked tool name lists rather
+// than the full per-tool scope matrix (which is ~25 KB across 200+ tools).
+type RobotUserCapabilitiesCompactResponse struct {
+	RobotUser    RobotUserContext `json:"robotUser"`
+	AllowedTools []string         `json:"allowedTools"`
+	BlockedTools []string         `json:"blockedTools,omitempty"`
+	AllowedCount int              `json:"allowedCount"`
+	BlockedCount int              `json:"blockedCount"`
+	Success      bool             `json:"success"`
+	Message      string           `json:"message"`
 }
 
 var (
@@ -114,169 +130,158 @@ var toolRequiredScopes = map[string][]string{
 
 func init() {
 	for toolName, requiredScopes := range map[string][]string{
-		"list-domains":                         {"scope:domain:read"},
-		"create-domain":                        {"scope:domain:write"},
-		"get-domain-details":                   {"scope:domain:read"},
-		"update-domain":                        {"scope:domain:write"},
-		"delete-domain":                        {"scope:domain:write"},
-		"list-organizations":                   {"scope:domain:read"},
-		"create-organization":                  {"scope:domain:write"},
-		"get-organization-details":             {"scope:domain:read"},
-		"update-organization":                  {"scope:domain:write"},
-		"delete-organization":                  {"scope:domain:write"},
-		"list-identity-groups":                 {"scope:domain:read"},
-		"create-identity-group":                {"scope:domain:write"},
-		"get-identity-group-details":           {"scope:domain:read"},
-		"list-identity-group-organizations":    {"scope:domain:read"},
-		"list-identity-group-users":            {"scope:domain:read"},
-		"list-available-group-organizations":   {"scope:domain:read"},
-		"list-available-identity-group-users":  {"scope:domain:read"},
-		"add-organizations-to-identity-group":  {"scope:domain:write"},
-		"update-identity-group-organization":   {"scope:domain:write"},
-		"remove-organizations-from-group":      {"scope:domain:write"},
-		"add-users-to-identity-group":          {"scope:domain:write"},
-		"remove-users-from-identity-group":     {"scope:domain:write"},
-		"update-identity-group":                {"scope:domain:write"},
-		"delete-identity-group":                {"scope:domain:write"},
-		"list-users":                           {"scope:domain:read"},
-		"create-user":                          {"scope:domain:write"},
-		"get-user-details":                     {"scope:domain:read"},
-		"update-user":                          {"scope:domain:write"},
-		"delete-user":                          {"scope:domain:write"},
-		"list-access-profiles":                 {"scope:access-profiles:read"},
-		"create-access-profile":                {"scope:access-profiles:write"},
-		"update-access-profile":                {"scope:access-profiles:write"},
-		"delete-access-profile":                {"scope:access-profiles:write"},
-		"dropdown-access-profiles":             {"scope:access-profiles:read"},
-		"lock-access-profile":                  {"scope:access-profiles:write"},
-		"list-ai-credentials":                  {"scope:ai-credentials:read"},
-		"create-ai-credential":                 {"scope:ai-credentials:write"},
-		"delete-ai-credential":                 {"scope:ai-credentials:write"},
-		"dropdown-ai-credentials":              {"scope:ai-credentials:read"},
-		"list-kubernetes-profiles":             {"scope:kubernetes-profiles:read"},
-		"create-kubernetes-profile":            {"scope:kubernetes-profiles:write"},
-		"delete-kubernetes-profile":            {"scope:kubernetes-profiles:write"},
-		"dropdown-kubernetes-profiles":         {"scope:kubernetes-profiles:read"},
-		"lock-kubernetes-profile":              {"scope:kubernetes-profiles:write"},
-		"list-opa-profiles":                    {"scope:opa-profiles:read"},
-		"create-opa-profile":                   {"scope:opa-profiles:write"},
-		"update-opa-profile":                   {"scope:opa-profiles:write"},
-		"delete-opa-profile":                   {"scope:opa-profiles:write"},
-		"dropdown-opa-profiles":                {"scope:opa-profiles:read"},
-		"lock-opa-profile":                     {"scope:opa-profiles:write"},
-		"sync-opa-profile":                     {"scope:opa-profiles:write"},
-		"make-opa-profile-default":             {"scope:opa-profiles:write"},
-		"list-alerting-profiles":               {"scope:alerting-profiles:read"},
-		"create-alerting-profile":              {"scope:alerting-profiles:write"},
-		"update-alerting-profile":              {"scope:alerting-profiles:write"},
-		"delete-alerting-profile":              {"scope:alerting-profiles:write"},
-		"dropdown-alerting-profiles":           {"scope:alerting-profiles:read"},
-		"lock-alerting-profile":                {"scope:alerting-profiles:write"},
-		"attach-alerting-profile":              {"scope:alerting-profiles:write"},
-		"detach-alerting-profile":              {"scope:alerting-profiles:write"},
-		"assign-alerting-emails":               {"scope:alerting-profiles:write"},
-		"assign-alerting-webhooks":             {"scope:alerting-profiles:write"},
-		"verify-alerting-webhook":              {"scope:alerting-profiles:write"},
-		"list-alerting-integrations":           {"scope:alerting-profiles:read"},
-		"create-alerting-integration":          {"scope:alerting-profiles:write"},
-		"update-alerting-integration":          {"scope:alerting-profiles:write"},
-		"delete-alerting-integration":          {"scope:alerting-profiles:write"},
-		"list-backup-credentials":              {"scope:backup-credentials:read"},
-		"create-backup-credential":             {"scope:backup-credentials:write"},
-		"update-backup-credential":             {"scope:backup-credentials:write"},
-		"delete-backup-credential":             {"scope:backup-credentials:write"},
-		"dropdown-backup-credentials":          {"scope:backup-credentials:read"},
-		"make-backup-credential-default":       {"scope:backup-credentials:write"},
-		"lock-backup-credential":               {"scope:backup-credentials:write"},
-		"create-backup-policy":                 {"scope:backup-policies:write"},
-		"get-backup-by-name":                   {"scope:backup-policies:read"},
-		"list-project-backups":                 {"scope:backup-policies:read"},
-		"list-project-restore-requests":        {"scope:backup-policies:read"},
-		"list-project-backup-schedules":        {"scope:backup-policies:read"},
-		"list-project-backup-locations":        {"scope:backup-policies:read"},
-		"list-project-backup-delete-requests":  {"scope:backup-policies:read"},
-		"describe-backup":                      {"scope:backup-policies:read"},
-		"describe-restore":                     {"scope:backup-policies:read"},
-		"describe-schedule":                    {"scope:backup-policies:read"},
-		"delete-backup":                        {"scope:backup-policies:write"},
-		"delete-backup-storage-location":       {"scope:backup-policies:write"},
-		"delete-restore":                       {"scope:backup-policies:write"},
-		"delete-schedule":                      {"scope:backup-policies:write"},
-		"import-backup-storage-location":       {"scope:backup-policies:write"},
-		"restore-backup":                       {"scope:backup-policies:write"},
-		"enable-project-backup":                {"scope:project-deployments"},
-		"disable-project-backup":               {"scope:project-deployments"},
-		"enable-project-monitoring":            {"scope:project-deployments"},
-		"disable-project-monitoring":           {"scope:project-deployments"},
-		"get-project-monitoring-alerts":        {"scope:projects:read"},
-		"list-project-alerts":                  {"scope:projects:read"},
-		"query-project-loki-logs":              {"scope:projects:read"},
-		"export-project-loki-logs":             {"scope:projects:read"},
-		"query-project-prometheus-metrics":     {"scope:projects:read"},
-		"autocomplete-project-metrics":         {"scope:projects:read"},
-		"enable-project-ai-assistant":          {"scope:project-deployments"},
-		"disable-project-ai-assistant":         {"scope:project-deployments"},
-		"enable-project-policy":                {"scope:project-deployments"},
-		"disable-project-policy":               {"scope:project-deployments"},
-		"enable-project-full-spot":             {"scope:projects:write"},
-		"disable-project-full-spot":            {"scope:projects:write"},
-		"enable-project-spot-workers":          {"scope:projects:write"},
-		"disable-project-spot-workers":         {"scope:projects:write"},
-		"enable-project-spot-vms":              {"scope:projects:write"},
-		"disable-project-spot-vms":             {"scope:projects:write"},
-		"get-project-service-status":           {"scope:servers:read"},
-		"list-images":                          {"scope:images:read"},
-		"get-image-details":                    {"scope:images:read"},
-		"bind-images-to-project":               {"scope:images:write"},
-		"unbind-images-from-project":           {"scope:images:write"},
-		"list-selected-project-images":         {"scope:images:read"},
-		"enable-autoscaling":                   {"scope:autoscaling"},
-		"update-autoscaling":                   {"scope:autoscaling"},
-		"disable-autoscaling":                  {"scope:autoscaling"},
-		"get-autoscaling-status":               {"scope:autoscaling"},
-		"list-standalone-vms":                  {"scope:vms:read"},
-		"get-standalone-vm-details":            {"scope:vms:read"},
-		"create-standalone-vm":                 {"scope:vms:write"},
-		"delete-standalone-vm":                 {"scope:vms:write"},
-		"update-standalone-vm-flavor":          {"scope:vms:write"},
-		"manage-standalone-vm-ip":              {"scope:vms:write"},
-		"reset-standalone-vm-status":           {"scope:vms:write"},
-		"get-standalone-vm-console":            {"scope:vms:read"},
-		"download-standalone-vm-rdp":           {"scope:vms:read"},
-		"reboot-standalone-vm":                 {"scope:vms:write"},
-		"shelve-standalone-vm":                 {"scope:vms:write"},
-		"start-standalone-vm":                  {"scope:vms:write"},
-		"get-standalone-vm-status":             {"scope:vms:read"},
-		"stop-standalone-vm":                   {"scope:vms:write"},
-		"unshelve-standalone-vm":               {"scope:vms:write"},
-		"get-standalone-vm-windows-password":   {"scope:vms:read"},
-		"create-standalone-vm-disk":            {"scope:vms:write"},
-		"resize-standalone-vm-disk":            {"scope:vms:write"},
-		"list-standalone-profiles":             {"scope:vms:read"},
-		"create-standalone-profile":            {"scope:vms:write"},
-		"update-standalone-profile":            {"scope:vms:write"},
-		"delete-standalone-profile":            {"scope:vms:write"},
-		"dropdown-standalone-profiles":         {"scope:vms:read"},
-		"lock-standalone-profile":              {"scope:vms:write"},
-		"create-standalone-profile-sg":         {"scope:vms:write"},
-		"update-standalone-profile-sg":         {"scope:vms:write"},
-		"delete-standalone-profile-sg":         {"scope:vms:write"},
-		"create-aws-cloud-credential":          {"scope:cloud-credentials:write"},
-		"update-aws-cloud-credential":          {"scope:cloud-credentials:write"},
-		"create-azure-cloud-credential":        {"scope:cloud-credentials:write"},
-		"update-azure-cloud-credential":        {"scope:cloud-credentials:write"},
-		"create-openstack-cloud-credential":    {"scope:cloud-credentials:write"},
-		"update-openstack-cloud-credential":    {"scope:cloud-credentials:write"},
-		"create-proxmox-cloud-credential":      {"scope:cloud-credentials:write"},
-		"update-proxmox-cloud-credential":      {"scope:cloud-credentials:write"},
-		"create-vsphere-cloud-credential":      {"scope:cloud-credentials:write"},
-		"update-vsphere-cloud-credential":      {"scope:cloud-credentials:write"},
-		"create-zadara-cloud-credential":       {"scope:cloud-credentials:write"},
-		"update-zadara-cloud-credential":       {"scope:cloud-credentials:write"},
-		"update-generic-kubernetes-credential": {"scope:cloud-credentials:write"},
-		"delete-cloud-credential":              {"scope:cloud-credentials:write"},
-		"make-cloud-credential-default":        {"scope:cloud-credentials:write"},
-		"lock-cloud-credential":                {"scope:cloud-credentials:write"},
+		"list-domains":                        {"scope:domain:read"},
+		"create-domain":                       {"scope:domain:write"},
+		"get-domain-details":                  {"scope:domain:read"},
+		"update-domain":                       {"scope:domain:write"},
+		"delete-domain":                       {"scope:domain:write"},
+		"list-organizations":                  {"scope:domain:read"},
+		"create-organization":                 {"scope:domain:write"},
+		"get-organization-details":            {"scope:domain:read"},
+		"update-organization":                 {"scope:domain:write"},
+		"delete-organization":                 {"scope:domain:write"},
+		"list-identity-groups":                {"scope:domain:read"},
+		"create-identity-group":               {"scope:domain:write"},
+		"get-identity-group-details":          {"scope:domain:read"},
+		"list-identity-group-organizations":   {"scope:domain:read"},
+		"list-identity-group-users":           {"scope:domain:read"},
+		"list-available-group-organizations":  {"scope:domain:read"},
+		"list-available-identity-group-users": {"scope:domain:read"},
+		"add-organizations-to-identity-group": {"scope:domain:write"},
+		"update-identity-group-organization":  {"scope:domain:write"},
+		"remove-organizations-from-group":     {"scope:domain:write"},
+		"add-users-to-identity-group":         {"scope:domain:write"},
+		"remove-users-from-identity-group":    {"scope:domain:write"},
+		"update-identity-group":               {"scope:domain:write"},
+		"delete-identity-group":               {"scope:domain:write"},
+		"list-users":                          {"scope:domain:read"},
+		"create-user":                         {"scope:domain:write"},
+		"get-user-details":                    {"scope:domain:read"},
+		"update-user":                         {"scope:domain:write"},
+		"delete-user":                         {"scope:domain:write"},
+		"list-access-profiles":                {"scope:access-profiles:read"},
+		"create-access-profile":               {"scope:access-profiles:write"},
+		"update-access-profile":               {"scope:access-profiles:write"},
+		"delete-access-profile":               {"scope:access-profiles:write"},
+		"dropdown-access-profiles":            {"scope:access-profiles:read"},
+		"lock-access-profile":                 {"scope:access-profiles:write"},
+		"list-ai-credentials":                 {"scope:ai-credentials:read"},
+		"create-ai-credential":                {"scope:ai-credentials:write"},
+		"delete-ai-credential":                {"scope:ai-credentials:write"},
+		"dropdown-ai-credentials":             {"scope:ai-credentials:read"},
+		"list-kubernetes-profiles":            {"scope:kubernetes-profiles:read"},
+		"create-kubernetes-profile":           {"scope:kubernetes-profiles:write"},
+		"delete-kubernetes-profile":           {"scope:kubernetes-profiles:write"},
+		"dropdown-kubernetes-profiles":        {"scope:kubernetes-profiles:read"},
+		"lock-kubernetes-profile":             {"scope:kubernetes-profiles:write"},
+		"list-opa-profiles":                   {"scope:opa-profiles:read"},
+		"create-opa-profile":                  {"scope:opa-profiles:write"},
+		"update-opa-profile":                  {"scope:opa-profiles:write"},
+		"delete-opa-profile":                  {"scope:opa-profiles:write"},
+		"dropdown-opa-profiles":               {"scope:opa-profiles:read"},
+		"lock-opa-profile":                    {"scope:opa-profiles:write"},
+		"sync-opa-profile":                    {"scope:opa-profiles:write"},
+		"make-opa-profile-default":            {"scope:opa-profiles:write"},
+		"list-alerting-profiles":              {"scope:alerting-profiles:read"},
+		"create-alerting-profile":             {"scope:alerting-profiles:write"},
+		"update-alerting-profile":             {"scope:alerting-profiles:write"},
+		"delete-alerting-profile":             {"scope:alerting-profiles:write"},
+		"dropdown-alerting-profiles":          {"scope:alerting-profiles:read"},
+		"lock-alerting-profile":               {"scope:alerting-profiles:write"},
+		"attach-alerting-profile":             {"scope:alerting-profiles:write"},
+		"detach-alerting-profile":             {"scope:alerting-profiles:write"},
+		"assign-alerting-emails":              {"scope:alerting-profiles:write"},
+		"assign-alerting-webhooks":            {"scope:alerting-profiles:write"},
+		"verify-alerting-webhook":             {"scope:alerting-profiles:write"},
+		"list-alerting-integrations":          {"scope:alerting-profiles:read"},
+		"create-alerting-integration":         {"scope:alerting-profiles:write"},
+		"update-alerting-integration":         {"scope:alerting-profiles:write"},
+		"delete-alerting-integration":         {"scope:alerting-profiles:write"},
+		"list-backup-credentials":             {"scope:backup-credentials:read"},
+		"create-backup-credential":            {"scope:backup-credentials:write"},
+		"update-backup-credential":            {"scope:backup-credentials:write"},
+		"delete-backup-credential":            {"scope:backup-credentials:write"},
+		"dropdown-backup-credentials":         {"scope:backup-credentials:read"},
+		"make-backup-credential-default":      {"scope:backup-credentials:write"},
+		"lock-backup-credential":              {"scope:backup-credentials:write"},
+		"create-backup-policy":                {"scope:backup-policies:write"},
+		"get-backup-by-name":                  {"scope:backup-policies:read"},
+		"list-project-backups":                {"scope:backup-policies:read"},
+		"list-project-restore-requests":       {"scope:backup-policies:read"},
+		"list-project-backup-schedules":       {"scope:backup-policies:read"},
+		"list-project-backup-locations":       {"scope:backup-policies:read"},
+		"list-project-backup-delete-requests": {"scope:backup-policies:read"},
+		"describe-backup":                     {"scope:backup-policies:read"},
+		"describe-restore":                    {"scope:backup-policies:read"},
+		"describe-schedule":                   {"scope:backup-policies:read"},
+		"delete-backup":                       {"scope:backup-policies:write"},
+		"delete-backup-storage-location":      {"scope:backup-policies:write"},
+		"delete-restore":                      {"scope:backup-policies:write"},
+		"delete-schedule":                     {"scope:backup-policies:write"},
+		"import-backup-storage-location":      {"scope:backup-policies:write"},
+		"restore-backup":                      {"scope:backup-policies:write"},
+		"enable-project-backup":               {"scope:project-deployments"},
+		"disable-project-backup":              {"scope:project-deployments"},
+		"enable-project-monitoring":           {"scope:project-deployments"},
+		"disable-project-monitoring":          {"scope:project-deployments"},
+		"get-project-monitoring-alerts":       {"scope:projects:read"},
+		"list-project-alerts":                 {"scope:projects:read"},
+		"query-project-loki-logs":             {"scope:projects:read"},
+		"export-project-loki-logs":            {"scope:projects:read"},
+		"query-project-prometheus-metrics":    {"scope:projects:read"},
+		"autocomplete-project-metrics":        {"scope:projects:read"},
+		"enable-project-ai-assistant":         {"scope:project-deployments"},
+		"disable-project-ai-assistant":        {"scope:project-deployments"},
+		"enable-project-policy":               {"scope:project-deployments"},
+		"disable-project-policy":              {"scope:project-deployments"},
+		"enable-project-full-spot":            {"scope:projects:write"},
+		"disable-project-full-spot":           {"scope:projects:write"},
+		"enable-project-spot-workers":         {"scope:projects:write"},
+		"disable-project-spot-workers":        {"scope:projects:write"},
+		"enable-project-spot-vms":             {"scope:projects:write"},
+		"disable-project-spot-vms":            {"scope:projects:write"},
+		"get-project-service-status":          {"scope:servers:read"},
+		"list-images":                         {"scope:images:read"},
+		"get-image-details":                   {"scope:images:read"},
+		"bind-images-to-project":              {"scope:images:write"},
+		"unbind-images-from-project":          {"scope:images:write"},
+		"list-selected-project-images":        {"scope:images:read"},
+		"enable-autoscaling":                  {"scope:autoscaling"},
+		"update-autoscaling":                  {"scope:autoscaling"},
+		"disable-autoscaling":                 {"scope:autoscaling"},
+		"get-autoscaling-status":              {"scope:autoscaling"},
+		"list-standalone-vms":                 {"scope:vms:read"},
+		"get-standalone-vm-details":           {"scope:vms:read"},
+		"create-standalone-vm":                {"scope:vms:write"},
+		"delete-standalone-vm":                {"scope:vms:write"},
+		"update-standalone-vm-flavor":         {"scope:vms:write"},
+		"manage-standalone-vm-ip":             {"scope:vms:write"},
+		"reset-standalone-vm-status":          {"scope:vms:write"},
+		"get-standalone-vm-console":           {"scope:vms:read"},
+		"download-standalone-vm-rdp":          {"scope:vms:read"},
+		"reboot-standalone-vm":                {"scope:vms:write"},
+		"shelve-standalone-vm":                {"scope:vms:write"},
+		"start-standalone-vm":                 {"scope:vms:write"},
+		"get-standalone-vm-status":            {"scope:vms:read"},
+		"stop-standalone-vm":                  {"scope:vms:write"},
+		"unshelve-standalone-vm":              {"scope:vms:write"},
+		"get-standalone-vm-windows-password":  {"scope:vms:read"},
+		"create-standalone-vm-disk":           {"scope:vms:write"},
+		"resize-standalone-vm-disk":           {"scope:vms:write"},
+		"list-standalone-profiles":            {"scope:vms:read"},
+		"create-standalone-profile":           {"scope:vms:write"},
+		"update-standalone-profile":           {"scope:vms:write"},
+		"delete-standalone-profile":           {"scope:vms:write"},
+		"dropdown-standalone-profiles":        {"scope:vms:read"},
+		"lock-standalone-profile":             {"scope:vms:write"},
+		"create-standalone-profile-sg":        {"scope:vms:write"},
+		"update-standalone-profile-sg":        {"scope:vms:write"},
+		"delete-standalone-profile-sg":        {"scope:vms:write"},
+		"create-cloud-credential":             {"scope:cloud-credentials:write"},
+		"update-cloud-credential":             {"scope:cloud-credentials:write"},
+		"delete-cloud-credential":             {"scope:cloud-credentials:write"},
+		"make-cloud-credential-default":       {"scope:cloud-credentials:write"},
+		"lock-cloud-credential":               {"scope:cloud-credentials:write"},
 	} {
 		toolRequiredScopes[toolName] = requiredScopes
 	}
@@ -495,6 +500,40 @@ func buildCapabilitiesResponse(robotCtx RobotUserContext) RobotUserCapabilitiesR
 	}
 }
 
+func buildCompactCapabilitiesResponse(robotCtx RobotUserContext) RobotUserCapabilitiesCompactResponse {
+	toolNames := make([]string, 0, len(toolRequiredScopes))
+	for toolName := range toolRequiredScopes {
+		toolNames = append(toolNames, toolName)
+	}
+	sort.Strings(toolNames)
+
+	allowed := make([]string, 0, len(toolNames))
+	var blocked []string
+	for _, toolName := range toolNames {
+		switch evaluateToolScopeAccess(toolName, robotCtx.Scopes).Status {
+		case "allowed":
+			allowed = append(allowed, toolName)
+		case "blocked":
+			blocked = append(blocked, toolName)
+		}
+	}
+
+	message := fmt.Sprintf("Robot User can use %d of %d scoped tools (call with detailed=true for the full scope matrix)", len(allowed), len(toolNames))
+	if robotCtx.ScopeDiscoveryError != "" {
+		message = "Robot User scope discovery failed"
+	}
+
+	return RobotUserCapabilitiesCompactResponse{
+		RobotUser:    robotCtx,
+		AllowedTools: allowed,
+		BlockedTools: blocked,
+		AllowedCount: len(allowed),
+		BlockedCount: len(blocked),
+		Success:      robotCtx.ScopeDiscoveryError == "",
+		Message:      message,
+	}
+}
+
 func currentRobotUserCapabilities() RobotUserCapabilitiesResponse {
 	return buildCapabilitiesResponse(getRobotUserContext())
 }
@@ -522,13 +561,90 @@ func scopeDeniedResponseWithCtx(toolName string, access ToolScopeAccess, robotCt
 	})
 }
 
+// Robot User context cache for the HTTP/per-request transport. Without this,
+// every scoped tool call performs an extra RobotDetails round-trip just to
+// authorize. Scopes change rarely, so a short TTL keeps authorization cheap
+// while still picking up scope changes within a couple of minutes.
+type cachedRobotUserContext struct {
+	ctx       RobotUserContext
+	expiresAt time.Time
+}
+
+const (
+	robotContextCacheTTL     = 2 * time.Minute
+	robotContextCacheMaxSize = 1024
+)
+
+var (
+	robotContextCacheMu sync.Mutex
+	robotContextCache   = make(map[string]cachedRobotUserContext)
+)
+
+func getCachedRobotContext(key string) (RobotUserContext, bool) {
+	if key == "" {
+		return RobotUserContext{}, false
+	}
+	robotContextCacheMu.Lock()
+	defer robotContextCacheMu.Unlock()
+	entry, ok := robotContextCache[key]
+	if !ok {
+		return RobotUserContext{}, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		delete(robotContextCache, key)
+		return RobotUserContext{}, false
+	}
+	return entry.ctx, true
+}
+
+func setCachedRobotContext(key string, ctx RobotUserContext) {
+	// Never cache discovery failures; they should be retried promptly.
+	if key == "" || ctx.ScopeDiscoveryError != "" {
+		return
+	}
+	robotContextCacheMu.Lock()
+	defer robotContextCacheMu.Unlock()
+	if len(robotContextCache) >= robotContextCacheMaxSize {
+		now := time.Now()
+		for k, v := range robotContextCache {
+			if now.After(v.expiresAt) {
+				delete(robotContextCache, k)
+			}
+		}
+		if len(robotContextCache) >= robotContextCacheMaxSize {
+			robotContextCache = make(map[string]cachedRobotUserContext)
+		}
+	}
+	robotContextCache[key] = cachedRobotUserContext{
+		ctx:       ctx,
+		expiresAt: time.Now().Add(robotContextCacheTTL),
+	}
+}
+
+func invalidateCachedRobotContext(key string) {
+	if key == "" {
+		return
+	}
+	robotContextCacheMu.Lock()
+	delete(robotContextCache, key)
+	robotContextCacheMu.Unlock()
+}
+
 func resolveRobotUserContext(reqCtx context.Context) RobotUserContext {
 	client := clientFromContext(reqCtx)
 	if client != nil && client != taikunClient {
+		// HTTP/per-request mode: serve the Robot User context from a short-TTL
+		// cache keyed by credential identity to avoid a RobotDetails round-trip
+		// on every scoped tool call.
+		key := credentialKeyFromContext(reqCtx)
+		if cached, ok := getCachedRobotContext(key); ok {
+			return cached
+		}
 		fetched, err := fetchRobotUserContext(client)
 		if err != nil {
 			return RobotUserContext{ScopeDiscoveryError: err.Error()}
 		}
+		setCachedRobotContext(key, fetched)
 		return fetched
 	}
 	return getRobotUserContext()
@@ -558,9 +674,33 @@ func authorizeTool(reqCtx context.Context, toolName string) *mcp_golang.ToolResp
 	return nil
 }
 
+// shouldAdvertiseTool decides whether a tool is registered into tools/list.
+//
+// Manifest Phase 1 (non-breaking): in stdio transport the Robot User context is
+// known at startup, so tools the user is not allowed to call are not advertised
+// at all (shrinking the manifest). In HTTP transport the global client is nil
+// (credentials are per-request and tools/list is served without them), so all
+// tools are advertised and per-request authorization still blocks disallowed
+// calls. Scope-discovery failures fail open so we never hide the whole manifest.
+func shouldAdvertiseTool(name string) bool {
+	if taikunClient == nil {
+		return true
+	}
+	robotCtx := getRobotUserContext()
+	if robotCtx.ScopeDiscoveryError != "" {
+		return true
+	}
+	return evaluateToolScopeAccess(name, robotCtx.Scopes).Status != "blocked"
+}
+
 func registerScopedTool[T any](server *mcp_golang.Server, name, description string, handler func(ctx context.Context, args T) (*mcp_golang.ToolResponse, error)) error {
 	if _, ok := toolRequiredScopes[name]; !ok {
 		return fmt.Errorf("missing scope mapping for scoped tool %q", name)
+	}
+
+	if !shouldAdvertiseTool(name) {
+		logger.Printf("Not advertising tool %q: Robot User lacks the required scopes", name)
+		return nil
 	}
 
 	return server.RegisterTool(name, description, func(ctx context.Context, args T) (*mcp_golang.ToolResponse, error) {

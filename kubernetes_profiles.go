@@ -74,7 +74,7 @@ func listKubernetesProfiles(client *taikungoclient.Client, args SearchListArgs) 
 			total = len(items)
 		}
 	}
-	return createListResponse("kubernetesProfiles", items, total, listMessage(total, "Kubernetes profile", "Kubernetes profiles")), nil
+	return createListResponse("kubernetesProfiles", toKubernetesProfileSummaries(items), total, listMessage(total, "Kubernetes profile", "Kubernetes profiles")), nil
 }
 
 func createKubernetesProfile(client *taikungoclient.Client, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
@@ -123,7 +123,7 @@ func dropdownKubernetesProfiles(client *taikungoclient.Client, args SearchListAr
 		return errorResp, nil
 	}
 
-	return createListResponse("kubernetesProfiles", items, len(items), listMessage(len(items), "Kubernetes profile", "Kubernetes profiles")), nil
+	return createListResponse("kubernetesProfiles", compactKubernetesProfileDropdown(items), len(items), listMessage(len(items), "Kubernetes profile", "Kubernetes profiles")), nil
 }
 
 func lockKubernetesProfile(client *taikungoclient.Client, args LockModeArgs) (*mcp_golang.ToolResponse, error) {

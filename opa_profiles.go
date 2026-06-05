@@ -56,7 +56,7 @@ func listOPAProfiles(client *taikungoclient.Client, args SearchListArgs) (*mcp_g
 			total = len(items)
 		}
 	}
-	return createListResponse("opaProfiles", items, total, listMessage(total, "OPA profile", "OPA profiles")), nil
+	return createListResponse("opaProfiles", toOPAProfileSummaries(items), total, listMessage(total, "OPA profile", "OPA profiles")), nil
 }
 
 func createOPAProfile(client *taikungoclient.Client, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
@@ -105,7 +105,7 @@ func dropdownOPAProfiles(client *taikungoclient.Client, args SearchListArgs) (*m
 		return errorResp, nil
 	}
 
-	return createListResponse("opaProfiles", items, len(items), listMessage(len(items), "OPA profile", "OPA profiles")), nil
+	return createListResponse("opaProfiles", compactExtendedDropdownRefs(items), len(items), listMessage(len(items), "OPA profile", "OPA profiles")), nil
 }
 
 func lockOPAProfile(client *taikungoclient.Client, args LockModeArgs) (*mcp_golang.ToolResponse, error) {

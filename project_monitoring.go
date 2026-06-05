@@ -5,13 +5,12 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
-	logqlsyntax "github.com/grafana/loki/v3/pkg/logql/syntax"
 	"github.com/itera-io/taikungoclient"
 	taikuncore "github.com/itera-io/taikungoclient/client"
 	mcp_golang "github.com/metoro-io/mcp-golang"
-	promqlparser "github.com/prometheus/prometheus/promql/parser"
 )
 
 type ProjectMonitoringAlertsArgs struct {
@@ -63,12 +62,11 @@ type ProjectPrometheusMetricsAutocompleteArgs struct {
 }
 
 type ProjectMonitoringAlertsResponse struct {
-	ProjectID int32                                  `json:"projectId"`
-	Status    string                                 `json:"status,omitempty"`
-	Data      *taikuncore.AlertData                  `json:"data,omitempty"`
-	Raw       *taikuncore.ProjectMonitoringAlertsDto `json:"raw,omitempty"`
-	Success   bool                                   `json:"success"`
-	Message   string                                 `json:"message"`
+	ProjectID int32                 `json:"projectId"`
+	Status    string                `json:"status,omitempty"`
+	Data      *taikuncore.AlertData `json:"data,omitempty"`
+	Success   bool                  `json:"success"`
+	Message   string                `json:"message"`
 }
 
 type ProjectAlertsResponse struct {
@@ -96,12 +94,11 @@ type ProjectLokiLogsExportResponse struct {
 }
 
 type ProjectPrometheusMetricsResponse struct {
-	ProjectID int32                               `json:"projectId"`
-	Status    string                              `json:"status,omitempty"`
-	Data      *taikuncore.MetricData              `json:"data,omitempty"`
-	Raw       *taikuncore.PrometheusMetricListDto `json:"raw,omitempty"`
-	Success   bool                                `json:"success"`
-	Message   string                              `json:"message"`
+	ProjectID int32                  `json:"projectId"`
+	Status    string                 `json:"status,omitempty"`
+	Data      *taikuncore.MetricData `json:"data,omitempty"`
+	Success   bool                   `json:"success"`
+	Message   string                 `json:"message"`
 }
 
 type ProjectPrometheusMetricsAutocompleteResponse struct {
@@ -144,16 +141,88 @@ func getMonitoringProjectStatus(client *taikungoclient.Client, projectID int32) 
 	}, nil
 }
 
+// Short-TTL cache of per-project "monitoring enabled" so the monitoring/log/
+// metric tools do not perform an extra ProjectsList round-trip on every call.
+// Project IDs are globally unique in CCF, so the project ID is a sufficient key.
+type cachedMonitoringStatus struct {
+	enabled   bool
+	expiresAt time.Time
+}
+
+const (
+	monitoringStatusCacheTTL     = 60 * time.Second
+	monitoringStatusCacheMaxSize = 4096
+)
+
+var (
+	monitoringStatusCacheMu sync.Mutex
+	monitoringStatusCache   = make(map[int32]cachedMonitoringStatus)
+)
+
+func getCachedMonitoringEnabled(projectID int32) (bool, bool) {
+	monitoringStatusCacheMu.Lock()
+	defer monitoringStatusCacheMu.Unlock()
+	entry, ok := monitoringStatusCache[projectID]
+	if !ok {
+		return false, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		delete(monitoringStatusCache, projectID)
+		return false, false
+	}
+	return entry.enabled, true
+}
+
+func setCachedMonitoringEnabled(projectID int32, enabled bool) {
+	monitoringStatusCacheMu.Lock()
+	defer monitoringStatusCacheMu.Unlock()
+	if len(monitoringStatusCache) >= monitoringStatusCacheMaxSize {
+		now := time.Now()
+		for id, entry := range monitoringStatusCache {
+			if now.After(entry.expiresAt) {
+				delete(monitoringStatusCache, id)
+			}
+		}
+		if len(monitoringStatusCache) >= monitoringStatusCacheMaxSize {
+			monitoringStatusCache = make(map[int32]cachedMonitoringStatus)
+		}
+	}
+	monitoringStatusCache[projectID] = cachedMonitoringStatus{
+		enabled:   enabled,
+		expiresAt: time.Now().Add(monitoringStatusCacheTTL),
+	}
+}
+
+// invalidateCachedMonitoringStatus clears the cached state for a project so an
+// enable/disable change is observed immediately by later monitoring queries.
+func invalidateCachedMonitoringStatus(projectID int32) {
+	monitoringStatusCacheMu.Lock()
+	delete(monitoringStatusCache, projectID)
+	monitoringStatusCacheMu.Unlock()
+}
+
+func monitoringNotEnabledResponse(projectID int32) *mcp_golang.ToolResponse {
+	return createJSONResponse(ErrorResponse{
+		Error:   fmt.Sprintf("Monitoring is not enabled for project %d", projectID),
+		Details: "Enable monitoring on the project first with enable-project-monitoring before querying alerts, logs, or metrics.",
+	})
+}
+
 func requireProjectMonitoringEnabled(client *taikungoclient.Client, projectID int32) (*monitoringProjectStatus, *mcp_golang.ToolResponse) {
+	if enabled, ok := getCachedMonitoringEnabled(projectID); ok {
+		if !enabled {
+			return nil, monitoringNotEnabledResponse(projectID)
+		}
+		return &monitoringProjectStatus{ID: projectID, MonitoringEnabled: true}, nil
+	}
+
 	project, errorResp := getMonitoringProjectStatus(client, projectID)
 	if errorResp != nil {
 		return nil, errorResp
 	}
+	setCachedMonitoringEnabled(projectID, project.MonitoringEnabled)
 	if !project.MonitoringEnabled {
-		return nil, createJSONResponse(ErrorResponse{
-			Error:   fmt.Sprintf("Monitoring is not enabled for project %d", projectID),
-			Details: "Enable monitoring on the project first with enable-project-monitoring before querying alerts, logs, or metrics.",
-		})
+		return nil, monitoringNotEnabledResponse(projectID)
 	}
 	return project, nil
 }
@@ -173,15 +242,41 @@ func parseOptionalRFC3339(value string, fieldName string) (*time.Time, *mcp_gola
 	return &parsed, nil
 }
 
+// checkBalancedDelimiters performs a lightweight syntactic sanity check on a
+// query expression. It intentionally avoids importing the full LogQL/PromQL
+// parsers (which drag in very large transitive dependency trees); the
+// monitoring backend performs authoritative validation and returns precise
+// errors, so a cheap balanced-delimiter check is enough to catch obvious typos.
+func checkBalancedDelimiters(expr string) error {
+	closers := map[rune]rune{')': '(', ']': '[', '}': '{'}
+	openers := map[rune]bool{'(': true, '[': true, '{': true}
+	var stack []rune
+	for _, r := range expr {
+		switch {
+		case openers[r]:
+			stack = append(stack, r)
+		case closers[r] != 0:
+			if len(stack) == 0 || stack[len(stack)-1] != closers[r] {
+				return fmt.Errorf("unbalanced %q", string(r))
+			}
+			stack = stack[:len(stack)-1]
+		}
+	}
+	if len(stack) > 0 {
+		return fmt.Errorf("unclosed %q", string(stack[len(stack)-1]))
+	}
+	return nil
+}
+
 func validateLogQLExpression(parameters string) *mcp_golang.ToolResponse {
 	trimmed := strings.TrimSpace(parameters)
 	if trimmed == "" {
 		return nil
 	}
-	if _, err := logqlsyntax.ParseExpr(trimmed); err != nil {
+	if err := checkBalancedDelimiters(trimmed); err != nil {
 		return createJSONResponse(ErrorResponse{
-			Error:   fmt.Sprintf("Invalid LogQL query: %s", err),
-			Details: "parameters must be a valid LogQL expression.",
+			Error:   fmt.Sprintf("Invalid LogQL query: %v", err),
+			Details: "parameters must be a syntactically balanced LogQL expression; the monitoring backend performs full validation.",
 		})
 	}
 	return nil
@@ -194,11 +289,10 @@ func validatePromQLExpression(parameters string) *mcp_golang.ToolResponse {
 			Error: "parameters is required for Prometheus metrics queries",
 		})
 	}
-	parser := promqlparser.NewParser(promqlparser.Options{})
-	if _, err := parser.ParseExpr(trimmed); err != nil {
+	if err := checkBalancedDelimiters(trimmed); err != nil {
 		return createJSONResponse(ErrorResponse{
-			Error:   fmt.Sprintf("Invalid PromQL query: %s", err),
-			Details: "parameters must be a valid PromQL expression.",
+			Error:   fmt.Sprintf("Invalid PromQL query: %v", err),
+			Details: "parameters must be a syntactically balanced PromQL expression; the monitoring backend performs full validation.",
 		})
 	}
 	return nil
@@ -295,7 +389,6 @@ func getProjectMonitoringAlerts(client *taikungoclient.Client, args ProjectMonit
 
 	response := ProjectMonitoringAlertsResponse{
 		ProjectID: args.ProjectID,
-		Raw:       result,
 		Success:   true,
 		Message:   fmt.Sprintf("Loaded monitoring alerts for project %d", args.ProjectID),
 	}
@@ -349,7 +442,11 @@ func queryProjectLokiLogs(client *taikungoclient.Client, args QueryProjectLokiLo
 	if _, errorResp := requireProjectMonitoringEnabled(client, args.ProjectID); errorResp != nil {
 		return errorResp, nil
 	}
-	query, errorResp := buildLokiLogsQuery(args.ProjectID, args.Parameters, args.Filters, args.StartDate, args.EndDate, args.Limit, args.Direction)
+	limit := args.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	query, errorResp := buildLokiLogsQuery(args.ProjectID, args.Parameters, args.Filters, args.StartDate, args.EndDate, limit, args.Direction)
 	if errorResp != nil {
 		return errorResp, nil
 	}
@@ -379,7 +476,11 @@ func exportProjectLokiLogs(client *taikungoclient.Client, args ExportProjectLoki
 	if _, errorResp := requireProjectMonitoringEnabled(client, args.ProjectID); errorResp != nil {
 		return errorResp, nil
 	}
-	query, errorResp := buildLokiLogsQuery(args.ProjectID, args.Parameters, args.Filters, args.StartDate, args.EndDate, args.Limit, args.Direction)
+	limit := args.Limit
+	if limit <= 0 {
+		limit = 1000
+	}
+	query, errorResp := buildLokiLogsQuery(args.ProjectID, args.Parameters, args.Filters, args.StartDate, args.EndDate, limit, args.Direction)
 	if errorResp != nil {
 		return errorResp, nil
 	}
@@ -467,7 +568,6 @@ func queryProjectPrometheusMetrics(client *taikungoclient.Client, args QueryProj
 
 	response := ProjectPrometheusMetricsResponse{
 		ProjectID: args.ProjectID,
-		Raw:       result,
 		Success:   true,
 		Message:   fmt.Sprintf("Loaded Prometheus metrics for project %d", args.ProjectID),
 	}
