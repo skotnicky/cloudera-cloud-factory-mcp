@@ -340,7 +340,7 @@ func parseMCPLockIDList(raw string) ([]int32, error) {
 		if item == "" {
 			continue
 		}
-		parsed, err := strconv.Atoi(item)
+		parsed, err := strconv.ParseInt(item, 10, 32)
 		if err != nil {
 			return nil, fmt.Errorf("invalid integer %q", item)
 		}
@@ -679,7 +679,7 @@ func toMCPLockInt32(value interface{}) (int32, bool) {
 		if trimmed == "" {
 			return 0, false
 		}
-		parsed, err := strconv.Atoi(trimmed)
+		parsed, err := strconv.ParseInt(trimmed, 10, 32)
 		if err != nil {
 			return 0, false
 		}

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/pbkdf2"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -48,9 +50,28 @@ func credentialKeyFromContext(ctx context.Context) string {
 	return ""
 }
 
-// credentialCacheKey derives a stable hash identity for a set of credentials.
-// Used to key per-credential caches (robot context, reusable clients) so we do
-// not store raw secrets as map keys.
+// credentialKeySalt is a per-process random salt used when deriving the cache
+// identity from credentials. Generating it once per process keeps the derived
+// identity stable for the lifetime of the process (so caches hit) while making
+// the derivation non-reproducible across restarts or other processes.
+var credentialKeySalt = newCredentialKeySalt()
+
+func newCredentialKeySalt() []byte {
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		// crypto/rand failure is effectively impossible on supported platforms.
+		// The derived value is only an in-memory cache identity (not stored
+		// password material), so a fixed fallback salt is acceptable here.
+		return []byte("ccf-mcp-credential-cache-salt")
+	}
+	return salt
+}
+
+// credentialCacheKey derives a stable, non-reversible identity for a set of
+// credentials. Used to key per-credential caches (robot context, reusable
+// clients) so we do not store raw secrets as map keys. PBKDF2 (a salted,
+// computationally expensive KDF) is used rather than a bare hash so the
+// derived identity does not expose the underlying secret to brute-force search.
 func credentialCacheKey(accessKey, secretKey, apiHost string) string {
 	accessKey = strings.TrimSpace(accessKey)
 	secretKey = strings.TrimSpace(secretKey)
@@ -58,8 +79,14 @@ func credentialCacheKey(accessKey, secretKey, apiHost string) string {
 	if apiHost == "" {
 		apiHost = defaultAPIHost
 	}
-	sum := sha256.Sum256([]byte(accessKey + "\x00" + secretKey + "\x00" + apiHost))
-	return hex.EncodeToString(sum[:])
+	material := accessKey + "\x00" + secretKey + "\x00" + apiHost
+	key, err := pbkdf2.Key(sha256.New, material, credentialKeySalt, 4096, 32)
+	if err != nil {
+		// pbkdf2.Key only errors on invalid parameters, which are fixed and
+		// valid here, so this branch is unreachable in practice.
+		panic(fmt.Sprintf("credentialCacheKey: pbkdf2 derivation failed: %v", err))
+	}
+	return hex.EncodeToString(key)
 }
 
 // createTaikunClientFromCreds validates credentials and returns a new CCF client.
