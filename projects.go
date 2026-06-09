@@ -154,7 +154,7 @@ func listVirtualClusterProjects(ctx context.Context, client *taikungoclient.Clie
 			}
 		}
 
-		if int32(len(projectList.Data)) < pageSize || pageOffset+pageSize >= projectList.GetTotalCount() {
+		if int32(len(projectList.Data)) < pageSize || int64(pageOffset+pageSize) >= projectList.GetTotalCount() {
 			break
 		}
 	}

@@ -420,7 +420,7 @@ func listStandaloneProfiles(client *taikungoclient.Client, args SearchListArgs) 
 		req = req.Id(args.ID)
 	}
 	if args.DomainID > 0 {
-		req = req.DomainId(args.DomainID)
+		req = req.AccountId(args.DomainID)
 	}
 
 	result, httpResponse, err := req.Execute()

@@ -461,7 +461,7 @@ func listUsers(client *taikungoclient.Client, args SearchListArgs) (*mcp_golang.
 			return errorResp, nil
 		}
 
-		items := []taikuncore.UserBriefDto{}
+		items := []taikuncore.UserListItemDto{}
 		total := 0
 		response := map[string]interface{}{}
 		if result != nil {

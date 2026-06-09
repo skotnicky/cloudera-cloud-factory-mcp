@@ -366,8 +366,8 @@ func fetchRobotUserContext(client *taikungoclient.Client) (RobotUserContext, err
 func robotUserContextFromDetails(details *taikuncore.RobotUsersListDto) RobotUserContext {
 	parsed := RobotUserContext{
 		UserID:           details.GetUserId(),
-		AccountID:        details.GetDomainId(),
-		AccountName:      details.GetDomainName(),
+		AccountID:        details.GetAccountId(),
+		AccountName:      details.GetAccountName(),
 		AccessKey:        details.GetAccessKey(),
 		OrganizationID:   details.GetOrganizationId(),
 		OrganizationName: details.GetOrganizationName(),
