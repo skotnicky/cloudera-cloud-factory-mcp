@@ -12,8 +12,7 @@ func listCloudCredentials(client *taikungoclient.Client, args ListCloudCredentia
 	ctx := context.Background()
 
 	// Switch to CloudcredentialsOrgList which is more standard and reliable
-	req := client.Client.CloudCredentialAPI.CloudcredentialsOrgList(ctx).
-		IsAdmin(args.IsAdmin)
+	req := client.Client.CloudCredentialAPI.CloudcredentialsOrgList(ctx)
 
 	if args.Search != "" {
 		req = req.Search(args.Search)
