@@ -426,7 +426,11 @@ func getEffectiveMCPLockScopeLocked() (mcpLockScope, bool) {
 	}
 	createdProjectIDs = globalMCPLockState.createdProjectIDs
 
-	baseProjectIDs := normalizeMCPLockIDs(append(hardLimitProjectIDs, createdProjectIDs...))
+	// createdProjectIDs only extend the hard limit allowlist; they must not activate a lock on their own.
+	baseProjectIDs := hardLimitProjectIDs
+	if globalMCPLockState.hardLimitScope != nil {
+		baseProjectIDs = normalizeMCPLockIDs(append(hardLimitProjectIDs, createdProjectIDs...))
+	}
 
 	effective := mcpLockScope{
 		OrganizationIDs: effectiveMCPLockDimension(hardLimitOrgIDs, runtimeOrgIDs),
