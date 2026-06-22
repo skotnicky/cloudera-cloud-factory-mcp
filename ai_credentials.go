@@ -27,7 +27,7 @@ func listAICredentials(client *taikungoclient.Client, args SearchListArgs) (*mcp
 		req = req.SortBy(args.SortBy)
 	}
 	if args.DomainID > 0 {
-		req = req.DomainId(args.DomainID)
+		req = req.AccountId(args.DomainID)
 	}
 	if args.SortDirection != "" {
 		req = req.SortDirection(args.SortDirection)

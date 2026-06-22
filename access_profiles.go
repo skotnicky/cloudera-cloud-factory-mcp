@@ -17,7 +17,7 @@ func listAccessProfiles(client *taikungoclient.Client, args SearchListArgs) (*mc
 		req = req.OrganizationId(args.OrganizationID)
 	}
 	if args.DomainID > 0 {
-		req = req.DomainId(args.DomainID)
+		req = req.AccountId(args.DomainID)
 	}
 	if args.SortBy != "" {
 		req = req.SortBy(args.SortBy)

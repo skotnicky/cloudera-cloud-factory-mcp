@@ -43,7 +43,7 @@ func testProjectsListJSON(t *testing.T, projectID int32, monitoringEnabled bool)
 	project.CloudType = taikuncore.ECLOUDCREDENTIALTYPE_AWS
 	project.ImportClusterType = taikuncore.IMPORTCLUSTERTYPE_NONE
 
-	return mustMarshalJSON(t, taikuncore.NewProjectsList([]taikuncore.ProjectListDetailDto{*project}, 1))
+	return mustMarshalJSON(t, taikuncore.NewProjectsList([]taikuncore.ProjectListDetailDto{*project}, 1, false, 1, 0))
 }
 
 func newMonitoringStatusServer(t *testing.T, projectID int32, monitoringEnabled bool) *httptest.Server {

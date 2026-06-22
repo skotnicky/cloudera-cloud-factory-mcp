@@ -27,7 +27,7 @@ func listBackupCredentials(client *taikungoclient.Client, args SearchListArgs) (
 		req = req.OrganizationId(args.OrganizationID)
 	}
 	if args.DomainID > 0 {
-		req = req.DomainId(args.DomainID)
+		req = req.AccountId(args.DomainID)
 	}
 	if args.Search != "" {
 		req = req.Search(args.Search)

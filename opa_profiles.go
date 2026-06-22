@@ -36,7 +36,7 @@ func listOPAProfiles(client *taikungoclient.Client, args SearchListArgs) (*mcp_g
 		req = req.SearchId(args.SearchID)
 	}
 	if args.DomainID > 0 {
-		req = req.DomainId(args.DomainID)
+		req = req.AccountId(args.DomainID)
 	}
 
 	result, httpResponse, err := req.Execute()
