@@ -114,12 +114,15 @@ func TestEvaluateToolScopeAccessAllowsNoScopeTools(t *testing.T) {
 }
 
 func TestRobotUserContextFromDetailsPopulatesAccountFields(t *testing.T) {
+	creator := taikuncore.NewAuditUserDto()
+	creator.SetDisplayName("creator")
+
 	details := taikuncore.NewRobotUsersListDto(
 		"user-1",
 		7,
 		"domain-fallback",
 		"access-key",
-		"creator",
+		*creator,
 		"robot-name",
 		[]string{"scope:projects:read"},
 		true,

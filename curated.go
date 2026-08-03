@@ -106,6 +106,16 @@ func compactExtendedDropdownRefs(items []taikuncore.CommonExtendedDropdownDto) [
 	return refs
 }
 
+// auditUserName flattens the API's `createdBy`/`lastModifiedBy` audit object
+// back to a single display string for the curated summaries. Falls back to the
+// user id when the display name is not set.
+func auditUserName(user taikuncore.AuditUserDto) string {
+	if name := user.GetDisplayName(); name != "" {
+		return name
+	}
+	return user.GetUserId()
+}
+
 func compactAICredentialDropdown(items []taikuncore.AiCredentialsForOrganizationEntity) []idNameRef {
 	if len(items) == 0 {
 		return nil
@@ -163,7 +173,7 @@ func toAccessProfileSummaries(items []taikuncore.AccessProfilesListDto) []Access
 			AllowedHostCount:     len(item.AllowedHosts),
 			Projects:             compactDropdownRefs(item.Projects),
 			CreatedAt:            item.GetCreatedAt(),
-			CreatedBy:            item.GetCreatedBy(),
+			CreatedBy:            auditUserName(item.GetCreatedBy()),
 		})
 	}
 	return summaries

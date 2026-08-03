@@ -371,7 +371,7 @@ func robotUserContextFromDetails(details *taikuncore.RobotUsersListDto) RobotUse
 		AccessKey:        details.GetAccessKey(),
 		OrganizationID:   details.GetOrganizationId(),
 		OrganizationName: details.GetOrganizationName(),
-		CreatedBy:        details.GetCreatedBy(),
+		CreatedBy:        auditUserName(details.GetCreatedBy()),
 		Name:             details.GetName(),
 		Description:      details.GetDescription(),
 		Scopes:           append([]string(nil), details.GetScopes()...),
