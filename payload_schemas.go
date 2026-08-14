@@ -341,10 +341,10 @@ func reflectPayloadFields(t reflect.Type, depth int) []PayloadFieldSchema {
 		schema := PayloadFieldSchema{Field: jsonName}
 		ft := f.Type
 
-		if ft.Kind() == reflect.Ptr {
-			schema.Optional = true
-			ft = ft.Elem()
-		}
+	if ft.Kind() == reflect.Pointer {
+		schema.Optional = true
+		ft = ft.Elem()
+	}
 
 		if nullable, underlying := nullableUnderlying(ft); nullable {
 			schema.Nullable = true
@@ -426,7 +426,7 @@ func friendlyTypeName(t reflect.Type) string {
 		return "array<" + friendlyTypeName(t.Elem()) + ">"
 	case reflect.Map:
 		return "map<" + friendlyTypeName(t.Key()) + "," + friendlyTypeName(t.Elem()) + ">"
-	case reflect.Ptr:
+	case reflect.Pointer:
 		return friendlyTypeName(t.Elem())
 	case reflect.Struct:
 		if isTimeType(t) {
@@ -452,7 +452,7 @@ func examplePayloadSkeleton(t reflect.Type, depth int) interface{} {
 		return nil
 	}
 
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if nullable, underlying := nullableUnderlying(t); nullable {

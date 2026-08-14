@@ -61,7 +61,7 @@ func createGoogleCloudCredential(client *taikungoclient.Client, args CreateGoogl
 	if errorResp != nil {
 		return errorResp, nil
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	req := client.Client.GoogleAPI.GooglecloudCreate(context.Background()).
 		Config(file).
@@ -93,7 +93,7 @@ func listGoogleRegions(client *taikungoclient.Client, args GoogleConfigArgs) (*m
 	if errorResp != nil {
 		return errorResp, nil
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	regions, httpResponse, err := client.Client.GoogleAPI.GooglecloudRegionList(context.Background()).
 		Config(file).
@@ -116,7 +116,7 @@ func listGoogleZones(client *taikungoclient.Client, args GoogleZoneListArgs) (*m
 	if errorResp != nil {
 		return errorResp, nil
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	req := client.Client.GoogleAPI.GooglecloudZoneList(context.Background()).
 		Config(file).
@@ -144,7 +144,7 @@ func listGoogleBillingAccounts(client *taikungoclient.Client, args GoogleConfigA
 	if errorResp != nil {
 		return errorResp, nil
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	accounts, httpResponse, err := client.Client.GoogleAPI.GooglecloudBillingAccountList(context.Background()).
 		Config(file).
