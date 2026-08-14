@@ -1,9 +1,9 @@
 module github.com/skotnicky/cloudera-cloud-factory-mcp
 
-go 1.25.7
+go 1.26
 
 require (
-	github.com/itera-io/taikungoclient v0.0.0-20260609020141-107552f38247
+	github.com/itera-io/taikungoclient v0.0.0-20260729134615-4e9baf7c9cad
 	github.com/metoro-io/mcp-golang v0.16.1
 	github.com/tidwall/gjson v1.18.0
 	k8s.io/apimachinery v0.35.4

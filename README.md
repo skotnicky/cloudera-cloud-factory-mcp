@@ -199,7 +199,11 @@ All other methods (`tools/call`, etc.) require valid `X-CCF-Access-Key` and `X-C
 
 ### Logs
 
-Runtime logs are written to:
+Runtime logs are written to a temporary directory. On Linux this is
+`/tmp/cloudera_cloud_factory_mcp_server.log`; on platforms without `/tmp`
+(such as Windows) the OS temp directory is used (for example
+`%TEMP%\cloudera_cloud_factory_mcp_server.log`). Override the location with the
+`CCF_MCP_LOG_FILE` environment variable:
 
 ```text
 /tmp/cloudera_cloud_factory_mcp_server.log
@@ -262,8 +266,10 @@ The server currently exposes tooling across these areas:
 - Standalone VM profiles: create, update, lock, and manage profile security group rules
 - Applications and catalogs: repositories, catalog apps, installs, sync, uninstall, and wait flows
 - Images and flavors: list, inspect, and bind images or flavors to projects
-- Cloud credentials: list plus create or update provider-specific credentials
+- Cloud credentials: list plus create or update AWS, Azure, and OpenStack credentials, and Google/GCP creation from a service-account key file (`create-google-cloud-credential`) with `list-google-regions`, `list-google-zones`, and `list-google-billing-accounts` lookups
 - Identity and access: domains, organizations, users, identity groups, and access profiles
+- Access profile sub-resources: SSH users, NTP servers, DNS servers, and trusted registries
+- DNS and certificates: DNS provider credentials, project DNS certificate service, and custom certificate authorities (certificate profiles)
 - Platform services: alerting, backups, monitoring, AI assistant, policy, and spot settings
 - Autoscaling: enable, inspect, update, and disable autoscaling
 

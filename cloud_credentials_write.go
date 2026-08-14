@@ -15,29 +15,29 @@ import (
 // cloudType discriminator replaces the per-provider create/update tools,
 // shrinking the tool manifest while keeping every provider reachable.
 type CloudCredentialWriteArgs struct {
-	CloudType string `json:"cloudType" jsonschema:"required,description=Cloud type: aws, azure, openstack, proxmox, vsphere, zadara (and generic-kubernetes for update)"`
+	CloudType string `json:"cloudType" jsonschema:"required,description=Cloud type: aws, azure, openstack (use create-google-cloud-credential for gcp)"`
 	Payload   string `json:"payload" jsonschema:"required,description=JSON payload matching the underlying create/update command for the chosen cloudType"`
 }
 
 func normalizeCloudType(cloudType string) string {
 	normalized := strings.ToLower(strings.TrimSpace(cloudType))
-	normalized = strings.ReplaceAll(normalized, "_", "-")
-	switch normalized {
-	case "generickubernetes", "generic-kubernetes", "k8s", "kubernetes":
-		return "generic-kubernetes"
-	default:
-		return normalized
-	}
+	return strings.ReplaceAll(normalized, "_", "-")
 }
 
 // googleCloudCredentialNotSupportedResponse explains that Google/GCP credentials
 // are not manageable through the JSON-payload create/update tools: the Google
 // create API requires a multipart service-account key file upload and has no
-// update endpoint, so it does not fit this tool's command-body model.
+// update endpoint, so it does not fit this tool's command-body model. Use the
+// dedicated create-google-cloud-credential tool (which accepts a key file path)
+// for creation instead.
 func googleCloudCredentialNotSupportedResponse(operation string) *mcp_golang.ToolResponse {
+	details := "The Google cloud credential API requires a multipart service-account key file upload, so it cannot be driven through a JSON payload here. Use the create-google-cloud-credential tool, which accepts the path to a GCP service-account JSON key file."
+	if strings.Contains(operation, "update") {
+		details = "The Google cloud credential API has no update endpoint. Delete and recreate the credential with create-google-cloud-credential (which accepts a GCP service-account JSON key file path) instead."
+	}
 	return createJSONResponse(ErrorResponse{
 		Error:   fmt.Sprintf("Google/GCP cloud credentials are not supported by %s", operation),
-		Details: "The Google cloud credential API requires a multipart service-account key file upload (and has no update endpoint), so it cannot be driven through a JSON payload here. Create or update Google credentials in the Cloudera Cloud Factory UI.",
+		Details: details,
 	})
 }
 
@@ -50,18 +50,12 @@ func createCloudCredential(client *taikungoclient.Client, args CloudCredentialWr
 		return createAzureCloudCredential(client, payload)
 	case "openstack":
 		return createOpenStackCloudCredential(client, payload)
-	case "proxmox":
-		return createProxmoxCloudCredential(client, payload)
-	case "vsphere":
-		return createVSphereCloudCredential(client, payload)
-	case "zadara":
-		return createZadaraCloudCredential(client, payload)
 	case "google", "gcp":
 		return googleCloudCredentialNotSupportedResponse("create-cloud-credential"), nil
 	default:
 		return createJSONResponse(ErrorResponse{
 			Error:   fmt.Sprintf("unsupported cloudType %q for create-cloud-credential", args.CloudType),
-			Details: "Supported cloudType values: aws, azure, openstack, proxmox, vsphere, zadara.",
+			Details: "Supported cloudType values: aws, azure, openstack (use create-google-cloud-credential for gcp).",
 		}), nil
 	}
 }
@@ -75,20 +69,12 @@ func updateCloudCredential(client *taikungoclient.Client, args CloudCredentialWr
 		return updateAzureCloudCredential(client, payload)
 	case "openstack":
 		return updateOpenStackCloudCredential(client, payload)
-	case "proxmox":
-		return updateProxmoxCloudCredential(client, payload)
-	case "vsphere":
-		return updateVSphereCloudCredential(client, payload)
-	case "zadara":
-		return updateZadaraCloudCredential(client, payload)
-	case "generic-kubernetes":
-		return updateGenericKubernetesCloudCredential(client, payload)
 	case "google", "gcp":
 		return googleCloudCredentialNotSupportedResponse("update-cloud-credential"), nil
 	default:
 		return createJSONResponse(ErrorResponse{
 			Error:   fmt.Sprintf("unsupported cloudType %q for update-cloud-credential", args.CloudType),
-			Details: "Supported cloudType values: aws, azure, openstack, proxmox, vsphere, zadara, generic-kubernetes.",
+			Details: "Supported cloudType values: aws, azure, openstack (use create-google-cloud-credential for gcp).",
 		}), nil
 	}
 }
@@ -163,100 +149,6 @@ func updateOpenStackCloudCredential(client *taikungoclient.Client, args JSONPayl
 		UpdateOpenStackCommand(*command).
 		Execute()
 	return finalizeAction(httpResponse, err, "update OpenStack cloud credential", "OpenStack cloud credential updated successfully")
-}
-
-func createProxmoxCloudCredential(client *taikungoclient.Client, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
-	command, errorResp := decodePayload[taikuncore.CreateProxmoxCommand](args.Payload)
-	if errorResp != nil {
-		return errorResp, nil
-	}
-
-	apiResp, httpResponse, err := client.Client.ProxmoxCloudCredentialAPI.ProxmoxCreate(context.Background()).
-		CreateProxmoxCommand(*command).
-		Execute()
-	return finalizeAPIOperation(apiResp, httpResponse, err, "create Proxmox cloud credential", "Proxmox cloud credential created successfully")
-}
-
-func updateProxmoxCloudCredential(client *taikungoclient.Client, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
-	command, errorResp := decodePayload[taikuncore.UpdateProxmoxCommand](args.Payload)
-	if errorResp != nil {
-		return errorResp, nil
-	}
-
-	httpResponse, err := client.Client.ProxmoxCloudCredentialAPI.ProxmoxUpdate(context.Background()).
-		UpdateProxmoxCommand(*command).
-		Execute()
-	return finalizeAction(httpResponse, err, "update Proxmox cloud credential", "Proxmox cloud credential updated successfully")
-}
-
-func createVSphereCloudCredential(client *taikungoclient.Client, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
-	command, errorResp := decodePayload[taikuncore.CreateVsphereCommand](args.Payload)
-	if errorResp != nil {
-		return errorResp, nil
-	}
-
-	apiResp, httpResponse, err := client.Client.VsphereCloudCredentialAPI.VsphereCreate(context.Background()).
-		CreateVsphereCommand(*command).
-		Execute()
-	return finalizeAPIOperation(apiResp, httpResponse, err, "create vSphere cloud credential", "vSphere cloud credential created successfully")
-}
-
-func updateVSphereCloudCredential(client *taikungoclient.Client, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
-	command, errorResp := decodePayload[taikuncore.UpdateVsphereCommand](args.Payload)
-	if errorResp != nil {
-		return errorResp, nil
-	}
-
-	httpResponse, err := client.Client.VsphereCloudCredentialAPI.VsphereUpdate(context.Background()).
-		UpdateVsphereCommand(*command).
-		Execute()
-	return finalizeAction(httpResponse, err, "update vSphere cloud credential", "vSphere cloud credential updated successfully")
-}
-
-func createZadaraCloudCredential(client *taikungoclient.Client, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
-	command, errorResp := decodePayload[taikuncore.CreateZadaraCloudCommand](args.Payload)
-	if errorResp != nil {
-		return errorResp, nil
-	}
-
-	apiResp, httpResponse, err := client.Client.ZadaraCloudCredentialAPI.ZadaraCreate(context.Background()).
-		CreateZadaraCloudCommand(*command).
-		Execute()
-	return finalizeAPIOperation(apiResp, httpResponse, err, "create Zadara cloud credential", "Zadara cloud credential created successfully")
-}
-
-func updateZadaraCloudCredential(client *taikungoclient.Client, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
-	command, errorResp := decodePayload[taikuncore.UpdateZadaraCommand](args.Payload)
-	if errorResp != nil {
-		return errorResp, nil
-	}
-
-	httpResponse, err := client.Client.ZadaraCloudCredentialAPI.ZadaraUpdate(context.Background()).
-		UpdateZadaraCommand(*command).
-		Execute()
-	return finalizeAction(httpResponse, err, "update Zadara cloud credential", "Zadara cloud credential updated successfully")
-}
-
-func updateGenericKubernetesCloudCredential(client *taikungoclient.Client, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
-	command, errorResp := decodePayload[taikuncore.UpdateGenericKubernetesCommand](args.Payload)
-	if errorResp != nil {
-		return errorResp, nil
-	}
-
-	result, httpResponse, err := client.Client.GenericKubernetesCloudCredentialAPI.GenericKubernetesUpdate(context.Background()).
-		UpdateGenericKubernetesCommand(*command).
-		Execute()
-	if err != nil {
-		return createError(httpResponse, err), nil
-	}
-	if errorResp := checkResponse(httpResponse, "update generic Kubernetes cloud credential"); errorResp != nil {
-		return errorResp, nil
-	}
-	return createJSONResponse(map[string]interface{}{
-		"result":  compactJSON(result),
-		"message": "Generic Kubernetes cloud credential updated successfully",
-		"success": true,
-	}), nil
 }
 
 func deleteCloudCredential(client *taikungoclient.Client, args IDArgs) (*mcp_golang.ToolResponse, error) {

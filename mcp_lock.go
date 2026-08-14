@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,13 +18,24 @@ import (
 )
 
 const (
-	mcpLockOrgIDsEnv        = "MCP_LOCK_ORGANIZATION_IDS"
-	mcpLockProjectIDsEnv    = "MCP_LOCK_PROJECT_IDS"
-	mcpLockOrgIDsArg        = "--mcp-lock-organization-ids"
-	mcpLockProjectIDsArg    = "--mcp-lock-project-ids"
-	mcpLockStatePathEnv     = "MCP_LOCK_STATE_PATH"
-	defaultMCPLockStatePath = "/tmp/cloudera_cloud_factory_mcp_lock_state.json"
+	mcpLockOrgIDsEnv     = "MCP_LOCK_ORGANIZATION_IDS"
+	mcpLockProjectIDsEnv = "MCP_LOCK_PROJECT_IDS"
+	mcpLockOrgIDsArg     = "--mcp-lock-organization-ids"
+	mcpLockProjectIDsArg = "--mcp-lock-project-ids"
+	mcpLockStatePathEnv  = "MCP_LOCK_STATE_PATH"
 )
+
+// defaultMCPLockStatePath resolves a writable, cross-platform default location
+// for the MCP lock state file. It uses /tmp when that directory exists
+// (preserving the historical Linux path) and otherwise falls back to the OS
+// temp directory (e.g. %TEMP% on Windows).
+func defaultMCPLockStatePath() string {
+	const stateName = "cloudera_cloud_factory_mcp_lock_state.json"
+	if info, err := os.Stat("/tmp"); err == nil && info.IsDir() {
+		return "/tmp/" + stateName
+	}
+	return filepath.Join(os.TempDir(), stateName)
+}
 
 type MCPLockArgs struct {
 	OrganizationIDs []int32 `json:"organizationIds,omitempty" jsonschema:"description=Allowed organization IDs for this MCP session"`
@@ -55,7 +67,7 @@ type mcpLockTargets struct {
 
 var globalMCPLockState mcpLockState
 var resolveMCPLockOrgsForProjectsFn = resolveMCPLockOrganizationIDsFromProjects
-var mcpLockStateFilePath = defaultMCPLockStatePath
+var mcpLockStateFilePath = defaultMCPLockStatePath()
 
 type mcpLockPersistedState struct {
 	CreatedProjectIDs []int32 `json:"createdProjectIds,omitempty"`
@@ -495,7 +507,7 @@ func addCreatedProjectID(projectID int32) error {
 func resolveMCPLockStatePath(getenv func(string) string) string {
 	path := strings.TrimSpace(getenv(mcpLockStatePathEnv))
 	if path == "" {
-		return defaultMCPLockStatePath
+		return defaultMCPLockStatePath()
 	}
 	return path
 }

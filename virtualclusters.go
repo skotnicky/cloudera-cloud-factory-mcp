@@ -210,7 +210,7 @@ func listVirtualClusters(client *taikungoclient.Client, args ListVirtualClusters
 			Health:             string(virtualCluster.Health),
 			KubernetesVersion:  virtualCluster.KubernetesVersion,
 			CreatedAt:          virtualCluster.CreatedAt,
-			CreatedBy:          virtualCluster.CreatedBy,
+			CreatedBy:          auditUserName(virtualCluster.CreatedBy),
 			DeleteOnExpiration: virtualCluster.DeleteOnExpiration,
 			Organization:       virtualCluster.OrganizationName,
 			IsLocked:           virtualCluster.IsLocked,

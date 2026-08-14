@@ -7,6 +7,18 @@ import (
 	taikuncore "github.com/itera-io/taikungoclient/client"
 )
 
+// auditUserName renders an AuditUserDto (used by API "createdBy"/"modifiedBy"
+// audit fields) as a human-readable string, preferring the display name and
+// falling back to the user ID.
+func auditUserName(u taikuncore.AuditUserDto) string {
+	if u.HasDisplayName() {
+		if name := u.GetDisplayName(); name != "" {
+			return name
+		}
+	}
+	return u.GetUserId()
+}
+
 // sensitiveResponseKeys are dropped from compacted responses so secrets are not
 // echoed into the agent context. Matched case-insensitively against JSON keys.
 var sensitiveResponseKeys = map[string]struct{}{
@@ -163,7 +175,7 @@ func toAccessProfileSummaries(items []taikuncore.AccessProfilesListDto) []Access
 			AllowedHostCount:     len(item.AllowedHosts),
 			Projects:             compactDropdownRefs(item.Projects),
 			CreatedAt:            item.GetCreatedAt(),
-			CreatedBy:            item.GetCreatedBy(),
+			CreatedBy:            auditUserName(item.GetCreatedBy()),
 		})
 	}
 	return summaries

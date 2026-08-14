@@ -23,15 +23,23 @@ type StandaloneWindowsPasswordArgs struct {
 }
 
 func listStandaloneVMs(client *taikungoclient.Client, args ProjectSearchListArgs) (*mcp_golang.ToolResponse, error) {
+	// The org-wide StandaloneList endpoint's server-side projectId filter is
+	// unreliable: it returns zero rows even for VMs that clearly belong to the
+	// requested project (StandaloneList with no filter returns the VM, but with
+	// ProjectId set returns nothing). For project-scoped listing we therefore
+	// source data from the project details endpoint the UI uses, which returns
+	// the correct VMs, and apply search/offset/limit client-side for parity
+	// with the documented list filters.
+	if args.ProjectID > 0 {
+		return listProjectStandaloneVMs(client, args)
+	}
+
 	req := client.Client.StandaloneAPI.StandaloneList(context.Background())
 	if args.Limit > 0 {
 		req = req.Limit(args.Limit)
 	}
 	if args.Offset > 0 {
 		req = req.Offset(args.Offset)
-	}
-	if args.ProjectID > 0 {
-		req = req.ProjectId(args.ProjectID)
 	}
 	if args.SortBy != "" {
 		req = req.SortBy(args.SortBy)
@@ -70,6 +78,61 @@ func listStandaloneVMs(client *taikungoclient.Client, args ProjectSearchListArgs
 		}
 	}
 	return createListResponse("standaloneVMs", compactJSON(items), total, listMessage(total, "standalone VM", "standalone VMs")), nil
+}
+
+// listProjectStandaloneVMs lists a single project's standalone VMs via the
+// reliable project details endpoint (StandaloneDetails), working around the
+// broken server-side projectId filter on the org-wide StandaloneList endpoint.
+// Search, offset, and limit are applied client-side because the details
+// endpoint does not accept them; a project's VM set is small enough that this
+// is inexpensive.
+func listProjectStandaloneVMs(client *taikungoclient.Client, args ProjectSearchListArgs) (*mcp_golang.ToolResponse, error) {
+	req := client.Client.StandaloneAPI.StandaloneDetails(context.Background(), args.ProjectID)
+	if args.SortBy != "" {
+		req = req.SortBy(args.SortBy)
+	}
+	if args.SortDirection != "" {
+		req = req.SortDirection(args.SortDirection)
+	}
+	if args.ID > 0 {
+		req = req.Id(args.ID)
+	}
+
+	result, httpResponse, err := req.Execute()
+	if err != nil {
+		return createError(httpResponse, err), nil
+	}
+	if errorResp := checkResponse(httpResponse, "list standalone VMs"); errorResp != nil {
+		return errorResp, nil
+	}
+
+	vms := []taikuncore.StandaloneVmsListForDetailsDto{}
+	if result != nil {
+		vms = result.GetData()
+	}
+
+	if needle := strings.ToLower(strings.TrimSpace(args.Search)); needle != "" {
+		filtered := make([]taikuncore.StandaloneVmsListForDetailsDto, 0, len(vms))
+		for _, vm := range vms {
+			if strings.Contains(strings.ToLower(vm.GetName()), needle) {
+				filtered = append(filtered, vm)
+			}
+		}
+		vms = filtered
+	}
+
+	if args.Offset > 0 {
+		if int(args.Offset) >= len(vms) {
+			vms = nil
+		} else {
+			vms = vms[args.Offset:]
+		}
+	}
+	if args.Limit > 0 && int(args.Limit) < len(vms) {
+		vms = vms[:args.Limit]
+	}
+
+	return createListResponse("standaloneVMs", compactJSON(vms), len(vms), listMessage(len(vms), "standalone VM", "standalone VMs")), nil
 }
 
 func getStandaloneVMDetails(client *taikungoclient.Client, args ProjectSearchListArgs) (*mcp_golang.ToolResponse, error) {

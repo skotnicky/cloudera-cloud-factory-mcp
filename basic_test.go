@@ -661,6 +661,39 @@ func TestArgumentStructs(t *testing.T) {
 				Detailed: true,
 			},
 		},
+		{
+			name: "CreateGoogleCloudCredentialArgs",
+			data: CreateGoogleCloudCredentialArgs{
+				ConfigFilePath:   "/tmp/gcp-key.json",
+				Name:             "gcp-cred",
+				Region:           "europe-west1",
+				BillingAccountID: "0123AB-4567CD-89EF01",
+				FolderID:         "123456789012",
+				ImportProject:    true,
+				AzCount:          3,
+				OrganizationID:   321,
+			},
+		},
+		{
+			name: "GoogleConfigArgs",
+			data: GoogleConfigArgs{
+				ConfigFilePath: "/tmp/gcp-key.json",
+			},
+		},
+		{
+			name: "GoogleZoneListArgs",
+			data: GoogleZoneListArgs{
+				ConfigFilePath: "/tmp/gcp-key.json",
+				Region:         "europe-west1",
+				CloudID:        123,
+			},
+		},
+		{
+			name: "AccessProfileScopedListArgs",
+			data: AccessProfileScopedListArgs{
+				AccessProfileID: 456,
+			},
+		},
 	}
 
 	for _, tt := range tests {

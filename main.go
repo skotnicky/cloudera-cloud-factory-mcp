@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/itera-io/taikungoclient"
@@ -25,7 +26,7 @@ var (
 
 var (
 	logger       *log.Logger
-	logFilePath  = "/tmp/cloudera_cloud_factory_mcp_server.log"
+	logFilePath  = defaultLogFilePath()
 	taikunClient *taikungoclient.Client
 	// httpTransportMode is true when serving the HTTP transport. In that mode a
 	// blocking tool ties up a request/goroutine and an upstream connection, so
@@ -330,9 +331,9 @@ type CloudCredentialListResponse struct {
 }
 
 type ListCloudCredentialsArgs struct {
-	Limit   int32  `json:"limit,omitempty" jsonschema:"description=Maximum number of results to return (optional)"`
-	Offset  int32  `json:"offset,omitempty" jsonschema:"description=Number of results to skip (optional)"`
-	Search  string `json:"search,omitempty" jsonschema:"description=Search term to filter results (optional)"`
+	Limit  int32  `json:"limit,omitempty" jsonschema:"description=Maximum number of results to return (optional)"`
+	Offset int32  `json:"offset,omitempty" jsonschema:"description=Number of results to skip (optional)"`
+	Search string `json:"search,omitempty" jsonschema:"description=Search term to filter results (optional)"`
 }
 
 type BindFlavorsArgs struct {
@@ -457,6 +458,21 @@ func checkResponse(response *http.Response, operation string) *mcp_golang.ToolRe
 	}
 
 	return nil
+}
+
+// defaultLogFilePath resolves a writable, cross-platform default log location.
+// It honors CCF_MCP_LOG_FILE when set; otherwise it uses /tmp when that
+// directory exists (preserving the historical Linux path) and falls back to the
+// OS temp directory (e.g. %TEMP% on Windows) so the server can start anywhere.
+func defaultLogFilePath() string {
+	if override := strings.TrimSpace(os.Getenv("CCF_MCP_LOG_FILE")); override != "" {
+		return override
+	}
+	const logName = "cloudera_cloud_factory_mcp_server.log"
+	if info, err := os.Stat("/tmp"); err == nil && info.IsDir() {
+		return "/tmp/" + logName
+	}
+	return filepath.Join(os.TempDir(), logName)
 }
 
 func initLogger() {
@@ -1524,10 +1540,10 @@ func main() {
 		return deleteStandaloneProfileSecurityGroup(clientFromContext(ctx), args)
 	})
 
-	mustRegisterScopedTool(server, "create-cloud-credential", "Create a cloud credential. Set cloudType to one of aws, azure, openstack, proxmox, vsphere, zadara; payload matches that cloud's create command.", func(ctx context.Context, args CloudCredentialWriteArgs) (*mcp_golang.ToolResponse, error) {
+	mustRegisterScopedTool(server, "create-cloud-credential", "Create a cloud credential. Set cloudType to one of aws, azure, openstack; payload matches that cloud's create command. For GCP use create-google-cloud-credential.", func(ctx context.Context, args CloudCredentialWriteArgs) (*mcp_golang.ToolResponse, error) {
 		return createCloudCredential(clientFromContext(ctx), args)
 	})
-	mustRegisterScopedTool(server, "update-cloud-credential", "Update a cloud credential. Set cloudType to one of aws, azure, openstack, proxmox, vsphere, zadara, generic-kubernetes; payload matches that cloud's update command.", func(ctx context.Context, args CloudCredentialWriteArgs) (*mcp_golang.ToolResponse, error) {
+	mustRegisterScopedTool(server, "update-cloud-credential", "Update a cloud credential. Set cloudType to one of aws, azure, openstack; payload matches that cloud's update command. GCP credentials have no update endpoint.", func(ctx context.Context, args CloudCredentialWriteArgs) (*mcp_golang.ToolResponse, error) {
 		return updateCloudCredential(clientFromContext(ctx), args)
 	})
 	mustRegisterScopedTool(server, "delete-cloud-credential", "Delete a cloud credential", func(ctx context.Context, args IDArgs) (*mcp_golang.ToolResponse, error) {
@@ -1538,6 +1554,144 @@ func main() {
 	})
 	mustRegisterScopedTool(server, "lock-cloud-credential", "Lock or unlock a cloud credential", func(ctx context.Context, args LockModeArgs) (*mcp_golang.ToolResponse, error) {
 		return lockCloudCredential(clientFromContext(ctx), args)
+	})
+
+	mustRegisterScopedTool(server, "create-google-cloud-credential", "Create a Google (GCP) cloud credential from a service-account JSON key file. Provide configFilePath (path to the GCP service-account key file) and a name; optionally region, billingAccountId, folderId, importProject, azCount, and organizationId. Discover valid values with list-google-regions, list-google-zones, and list-google-billing-accounts.", func(ctx context.Context, args CreateGoogleCloudCredentialArgs) (*mcp_golang.ToolResponse, error) {
+		return createGoogleCloudCredential(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "list-google-regions", "List available GCP regions for a service-account JSON key file (configFilePath)", func(ctx context.Context, args GoogleConfigArgs) (*mcp_golang.ToolResponse, error) {
+		return listGoogleRegions(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "list-google-zones", "List available GCP zones for a region using a service-account JSON key file (configFilePath, region)", func(ctx context.Context, args GoogleZoneListArgs) (*mcp_golang.ToolResponse, error) {
+		return listGoogleZones(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "list-google-billing-accounts", "List available GCP billing accounts for a service-account JSON key file (configFilePath)", func(ctx context.Context, args GoogleConfigArgs) (*mcp_golang.ToolResponse, error) {
+		return listGoogleBillingAccounts(clientFromContext(ctx), args)
+	})
+
+	// Access profile sub-resources: DNS servers, NTP servers, SSH users, trusted registries.
+	mustRegisterScopedTool(server, "list-dns-servers", "List DNS servers configured on an access profile (accessProfileId)", func(ctx context.Context, args AccessProfileScopedListArgs) (*mcp_golang.ToolResponse, error) {
+		return listDNSServers(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "create-dns-server", "Add a DNS server to an access profile (payload: CreateDnsServerCommand with address and accessProfileId)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return createDNSServer(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "edit-dns-server", "Edit a DNS server address on an access profile (id + payload: DnsNtpAddressEditDto)", func(ctx context.Context, args IDPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return editDNSServer(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "delete-dns-server", "Delete a DNS server from an access profile", func(ctx context.Context, args IDArgs) (*mcp_golang.ToolResponse, error) {
+		return deleteDNSServer(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "list-ntp-servers", "List NTP servers configured on an access profile (accessProfileId)", func(ctx context.Context, args AccessProfileScopedListArgs) (*mcp_golang.ToolResponse, error) {
+		return listNTPServers(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "create-ntp-server", "Add an NTP server to an access profile (payload: CreateNtpServerCommand with address and accessProfileId)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return createNTPServer(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "edit-ntp-server", "Edit an NTP server address on an access profile (id + payload: DnsNtpAddressEditDto)", func(ctx context.Context, args IDPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return editNTPServer(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "delete-ntp-server", "Delete an NTP server from an access profile", func(ctx context.Context, args IDArgs) (*mcp_golang.ToolResponse, error) {
+		return deleteNTPServer(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "list-ssh-users", "List SSH users configured on an access profile (accessProfileId)", func(ctx context.Context, args AccessProfileScopedListArgs) (*mcp_golang.ToolResponse, error) {
+		return listSSHUsers(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "create-ssh-user", "Add an SSH user to an access profile (payload: CreateSshUserCommand with name, sshPublicKey, accessProfileId)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return createSSHUser(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "edit-ssh-user", "Edit an SSH user on an access profile (payload: EditSshUserCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return editSSHUser(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "delete-ssh-user", "Delete an SSH user from an access profile (payload: DeleteSshUserCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return deleteSSHUser(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "list-trusted-registries", "List trusted container registries configured on an access profile (accessProfileId)", func(ctx context.Context, args AccessProfileScopedListArgs) (*mcp_golang.ToolResponse, error) {
+		return listTrustedRegistries(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "create-trusted-registry", "Add a trusted registry to an access profile (payload: CreateTrustedRegistriesCommand with registry and accessProfileId)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return createTrustedRegistry(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "edit-trusted-registry", "Edit a trusted registry on an access profile (id + payload: TrustedRegistryEditDto)", func(ctx context.Context, args IDPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return editTrustedRegistry(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "delete-trusted-registry", "Delete a trusted registry from an access profile", func(ctx context.Context, args IDArgs) (*mcp_golang.ToolResponse, error) {
+		return deleteTrustedRegistry(clientFromContext(ctx), args)
+	})
+
+	// DNS provider credentials (organization-level).
+	mustRegisterScopedTool(server, "list-dns-credentials", "List DNS provider credentials with optional filtering", func(ctx context.Context, args SearchListArgs) (*mcp_golang.ToolResponse, error) {
+		return listDNSCredentials(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "dropdown-dns-credentials", "List DNS credential dropdown entries", func(ctx context.Context, args SearchListArgs) (*mcp_golang.ToolResponse, error) {
+		return dropdownDNSCredentials(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "create-dns-credential", "Create a DNS provider credential (payload: DnsCredentialCreateCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return createDNSCredential(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "update-dns-credential", "Update a DNS provider credential (payload: DnsCredentialUpdateCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return updateDNSCredential(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "delete-dns-credential", "Delete a DNS provider credential", func(ctx context.Context, args IDArgs) (*mcp_golang.ToolResponse, error) {
+		return deleteDNSCredential(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "make-dns-credential-default", "Make a DNS provider credential default (payload: DnsCredentialMakeDefaultCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return makeDNSCredentialDefault(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "lock-dns-credential", "Lock or unlock a DNS provider credential (payload: DnsCredentialLockCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return lockDNSCredential(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "attach-dns-credential-to-project", "Attach a DNS credential to a project (payload: AttachDetachDnsCredentialCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return attachDNSCredentialToProject(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "detach-dns-credential-from-project", "Detach a DNS credential from a project (payload: AttachDetachDnsCredentialCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return detachDNSCredentialFromProject(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "validate-dns-credential", "Validate a DNS provider credential (payload: ValidateDnsCertCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return validateDNSCredential(clientFromContext(ctx), args)
+	})
+
+	// DNS certificate service (project-scoped ACME/DNS-01 certificates).
+	mustRegisterScopedTool(server, "get-dns-cert-status", "Get the DNS certificate status for a project", func(ctx context.Context, args ProjectIDArgs) (*mcp_golang.ToolResponse, error) {
+		return getDNSCertStatus(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "enable-dns-cert", "Enable the DNS certificate service for a project (payload: EnableDnsCertCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return enableDNSCert(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "disable-dns-cert", "Disable the DNS certificate service for a project (payload: DisableDnsCertCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return disableDNSCert(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "sync-dns-cert", "Sync the DNS certificate for a project (payload: DnsCertSyncCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return syncDNSCert(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "validate-dns-cert", "Validate DNS certificate settings (payload: ValidateDnsCertCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return validateDNSCert(clientFromContext(ctx), args)
+	})
+
+	// Certificate authorities (custom CA / certificate profiles).
+	mustRegisterScopedTool(server, "list-certificate-authorities", "List custom certificate authorities with optional filtering", func(ctx context.Context, args SearchListArgs) (*mcp_golang.ToolResponse, error) {
+		return listCertificateAuthorities(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "dropdown-certificate-authorities", "List certificate authority dropdown entries", func(ctx context.Context, args SearchListArgs) (*mcp_golang.ToolResponse, error) {
+		return dropdownCertificateAuthorities(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "create-certificate-authority", "Create a custom certificate authority (payload: CustomCertificateAuthorityCreateCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return createCertificateAuthority(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "update-certificate-authority", "Update a custom certificate authority (payload: CustomCertificateAuthorityUpdateCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return updateCertificateAuthority(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "delete-certificate-authority", "Delete a custom certificate authority", func(ctx context.Context, args IDArgs) (*mcp_golang.ToolResponse, error) {
+		return deleteCertificateAuthority(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "make-certificate-authority-default", "Make a custom certificate authority default (payload: CustomCertificateAuthorityMakeDefaultCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return makeCertificateAuthorityDefault(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "lock-certificate-authority", "Lock or unlock a custom certificate authority (payload: CustomCertificateAuthorityLockCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return lockCertificateAuthority(clientFromContext(ctx), args)
+	})
+	mustRegisterScopedTool(server, "validate-certificate-authority", "Validate a custom certificate authority (payload: CustomCertificateAuthorityValidateCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return validateCertificateAuthority(clientFromContext(ctx), args)
 	})
 
 	logger.Println("All tools registered successfully. Starting MCP server...")

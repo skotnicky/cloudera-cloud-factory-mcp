@@ -30,8 +30,8 @@ github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX
 github.com/google/gofuzz v1.0.0/go.mod h1:dBl0BpW6vV/+mYPU4Po3pmUjxk6FQPldtuIdl/M65Eg=
 github.com/invopop/jsonschema v0.13.0 h1:KvpoAJWEjR3uD9Kbm2HWJmqsEaHt8lBUpd0qHcIi21E=
 github.com/invopop/jsonschema v0.13.0/go.mod h1:ffZ5Km5SWWRAIN6wbDXItl95euhFz2uON45H2qjYt+0=
-github.com/itera-io/taikungoclient v0.0.0-20260609020141-107552f38247 h1:5noJZzvuoT30eosaB1Wammw/d2oNDLhFVYdeNCvvaj4=
-github.com/itera-io/taikungoclient v0.0.0-20260609020141-107552f38247/go.mod h1:VEIUQxLg9qNq20j4KELD2XBKak/M/d1OEdEaaCI0olo=
+github.com/itera-io/taikungoclient v0.0.0-20260729134615-4e9baf7c9cad h1:vHYi5g62nlsGi9oxiRBi7NcNUG9C3CbKKf0Z/UTyaXI=
+github.com/itera-io/taikungoclient v0.0.0-20260729134615-4e9baf7c9cad/go.mod h1:KCFZYY0I66k063SJ1RuUBenTagRYSy58PUwgxhaOzA8=
 github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
 github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHmT4TnhNGBo=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
