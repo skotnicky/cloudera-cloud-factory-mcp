@@ -448,6 +448,12 @@ func TestArgumentStructs(t *testing.T) {
 			},
 		},
 		{
+			name: "DescribePayloadArgs",
+			data: DescribePayloadArgs{
+				Name: "create-standalone-vm",
+			},
+		},
+		{
 			name: "IDArgs",
 			data: IDArgs{
 				ID: 123,

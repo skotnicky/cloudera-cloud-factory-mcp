@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	taikuncore "github.com/itera-io/taikungoclient/client"
+	"github.com/tidwall/gjson"
 )
 
 // auditUserName renders an AuditUserDto (used by API "createdBy"/"modifiedBy"
@@ -17,6 +18,24 @@ func auditUserName(u taikuncore.AuditUserDto) string {
 		}
 	}
 	return u.GetUserId()
+}
+
+// auditUserNameFromJSON renders a raw JSON "createdBy"/"modifiedBy" audit value
+// as a human-readable string. The field is an AuditUserDto object on current
+// APIs (preferring displayName, falling back to userId), but older payloads
+// returned a plain string; this handles both so the value is never surfaced as
+// an escaped JSON blob.
+func auditUserNameFromJSON(v gjson.Result) string {
+	if !v.Exists() {
+		return ""
+	}
+	if v.Type == gjson.String {
+		return v.String()
+	}
+	if name := strings.TrimSpace(v.Get("displayName").String()); name != "" {
+		return name
+	}
+	return v.Get("userId").String()
 }
 
 // sensitiveResponseKeys are dropped from compacted responses so secrets are not

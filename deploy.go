@@ -440,18 +440,19 @@ func createCluster(ctx context.Context, client *taikungoclient.Client, args Crea
 		}
 	}
 
-	commitResp, commitErr := commitProject(client, CommitProjectArgs{ProjectId: projectID})
-	if commitErr != nil {
-		return createClusterFailureResponse(projectID, "commit", createJSONResponse(ErrorResponse{
-			Error:   "Failed to commit project",
-			Details: commitErr.Error(),
-		})), nil
-	}
-	if !isToolResponseSuccess(commitResp) {
-		return createClusterFailureResponse(projectID, "commit", commitResp), nil
+	// Commit the freshly assembled project directly via the fallback path. The
+	// project was just created (not Updating), so we skip the tool-level
+	// commit-project status guard, which would add a redundant status lookup.
+	if _, commitErrorInfo := commitProjectWithFallback(client, projectID); commitErrorInfo != nil {
+		return createClusterFailureResponse(projectID, "commit", commitErrorInfo.toolResponse()), nil
 	}
 
-	waitForCreation := true
+	// Default to NOT blocking on readiness. A full initial Kubernetes deploy
+	// often takes 10-30 minutes, which exceeds typical MCP client request
+	// timeouts (~60s) and would surface as a client-side timeout even though
+	// provisioning is progressing server-side. By default we return once the
+	// commit is accepted and let the caller poll wait-for-project/get-project-details.
+	waitForCreation := false
 	if args.WaitForCreation != nil {
 		waitForCreation = *args.WaitForCreation
 	}
@@ -475,9 +476,14 @@ func createCluster(ctx context.Context, client *taikungoclient.Client, args Crea
 		}
 	}
 
+	message := fmt.Sprintf("Cluster %q provisioned successfully in project %d", args.Name, projectID)
+	if !waitForCreation {
+		message = fmt.Sprintf("Cluster %q committed in project %d and is now provisioning. This typically takes 10-30 minutes; poll wait-for-project or get-project-details until Status is Ready.", args.Name, projectID)
+	}
+
 	return createJSONResponse(map[string]interface{}{
 		"success":             true,
-		"message":             fmt.Sprintf("Cluster %q provisioned successfully in project %d", args.Name, projectID),
+		"message":             message,
 		"projectId":           projectID,
 		"projectCreated":      true,
 		"flavors":             flavors,
@@ -758,7 +764,130 @@ func createClusterFailureResponse(projectID int32, stage string, base *mcp_golan
 	return createJSONResponse(payload)
 }
 
+// PreflightCheck is a single readiness check in a preflight-project report.
+type PreflightCheck struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"` // pass | warn | fail
+	Message string `json:"message,omitempty"`
+}
+
+// PreflightProjectResponse summarizes whether a project is ready to be committed
+// and to host catalog/app deployments, collapsing the common trial-and-error
+// prerequisites (status, node sizing, kubeconfig availability) into one report.
+type PreflightProjectResponse struct {
+	ProjectID     int32            `json:"projectId"`
+	Name          string           `json:"name,omitempty"`
+	Status        string           `json:"status,omitempty"`
+	Health        string           `json:"health,omitempty"`
+	CloudType     string           `json:"cloudType,omitempty"`
+	Monitoring    bool             `json:"monitoringEnabled"`
+	NodeCounts    map[string]int   `json:"nodeCounts,omitempty"`
+	ReadyToCommit bool             `json:"readyToCommit"`
+	Checks        []PreflightCheck `json:"checks"`
+	Message       string           `json:"message"`
+	Success       bool             `json:"success"`
+}
+
+func preflightProject(client *taikungoclient.Client, args GetProjectDetailsArgs) (*mcp_golang.ToolResponse, error) {
+	ctx := context.Background()
+
+	serversResult, serversResponse, err := client.Client.ServersAPI.ServersDetails(ctx, args.ProjectId).Execute()
+	if err != nil {
+		return apiErrorInfoFromResponse(serversResponse, err).toolResponse(), nil
+	}
+	if errorResp := checkResponse(serversResponse, "preflight project"); errorResp != nil {
+		return errorResp, nil
+	}
+	if serversResult == nil {
+		return createJSONResponse(ErrorResponse{
+			Error: fmt.Sprintf("No details returned for project %d", args.ProjectId),
+		}), nil
+	}
+
+	project := serversResult.GetProject()
+	status := strings.TrimSpace(string(project.GetStatus()))
+	hasKubeconfig := project.GetHasKubeConfigFile()
+	monitoring := project.GetIsMonitoringEnabled()
+
+	nodeCounts := map[string]int{}
+	for _, server := range serversResult.GetData() {
+		role := strings.ToLower(strings.TrimSpace(string(server.GetRole())))
+		if role != "" {
+			nodeCounts[role]++
+		}
+	}
+
+	checks := make([]PreflightCheck, 0, 3)
+
+	// Status check: an Updating project has an in-flight commit/repair.
+	statusCheck := PreflightCheck{Name: "projectStatus", Status: "pass", Message: fmt.Sprintf("Status is %q", status)}
+	if projectStatusBlocksCommit(status) {
+		statusCheck.Status = "fail"
+		statusCheck.Message = fmt.Sprintf("Status is %q: a commit or repair is already in progress. Wait for it to settle before committing.", status)
+	}
+	checks = append(checks, statusCheck)
+
+	// Sizing check: reuse the same validation commit-project enforces.
+	sizingCheck := PreflightCheck{Name: "nodeSizing", Status: "pass", Message: "Kubemaster/Kubeworker sizing meets commit minimums"}
+	if errorInfo := validateProjectSizingForCommit(client, args.ProjectId); errorInfo != nil {
+		sizingCheck.Status = "fail"
+		sizingCheck.Message = errorInfo.Message
+	}
+	checks = append(checks, sizingCheck)
+
+	// Kubeconfig check: required before catalog binding and app deployment.
+	kubeconfigCheck := PreflightCheck{Name: "kubeconfig", Status: "pass", Message: "Project has a kubeconfig; catalog binding and app deployment are supported"}
+	if !hasKubeconfig {
+		kubeconfigCheck.Status = "warn"
+		kubeconfigCheck.Message = "No kubeconfig yet. bind-projects-to-catalog and app-install require the Kubernetes cluster to be provisioned first; commit-project and wait for readiness before deploying apps."
+	}
+	checks = append(checks, kubeconfigCheck)
+
+	readyToCommit := true
+	failCount := 0
+	warnCount := 0
+	for _, c := range checks {
+		switch c.Status {
+		case "fail":
+			readyToCommit = false
+			failCount++
+		case "warn":
+			warnCount++
+		}
+	}
+
+	message := fmt.Sprintf("Project %d passed all preflight checks", args.ProjectId)
+	if failCount > 0 {
+		message = fmt.Sprintf("Project %d has %d blocking issue(s) to resolve before commit", args.ProjectId, failCount)
+	} else if warnCount > 0 {
+		message = fmt.Sprintf("Project %d is ready to commit with %d warning(s)", args.ProjectId, warnCount)
+	}
+
+	return createJSONResponse(PreflightProjectResponse{
+		ProjectID:     args.ProjectId,
+		Name:          project.GetName(),
+		Status:        status,
+		Health:        strings.TrimSpace(string(project.GetHealth())),
+		CloudType:     strings.TrimSpace(string(project.GetCloudType())),
+		Monitoring:    monitoring,
+		NodeCounts:    nodeCounts,
+		ReadyToCommit: readyToCommit,
+		Checks:        checks,
+		Message:       message,
+		Success:       true,
+	}), nil
+}
+
 func commitProject(client *taikungoclient.Client, args CommitProjectArgs) (*mcp_golang.ToolResponse, error) {
+	// Guard against committing a project that already has an in-flight commit or
+	// repair. Fail open on lookup errors: only block when we positively observe
+	// an Updating status, so a transient status read never stalls a valid commit.
+	if status, _ := currentProjectStatus(client, args.ProjectId); projectStatusBlocksCommit(status) {
+		return createJSONResponse(ErrorResponse{
+			Error: fmt.Sprintf("Project %d is currently %q, which means a commit or repair is already in progress. Wait for it to settle (poll get-project-details or wait-for-project) before calling commit-project again.", args.ProjectId, status),
+		}), nil
+	}
+
 	result, errorInfo := commitProjectWithFallback(client, args.ProjectId)
 	if errorInfo != nil {
 		return errorInfo.toolResponse(), nil
@@ -774,6 +903,29 @@ func commitProject(client *taikungoclient.Client, args CommitProjectArgs) (*mcp_
 type projectCommitResult struct {
 	Mode    string
 	Message string
+}
+
+// projectStatusBlocksCommit reports whether a project in the given status must
+// not be committed. An "Updating" project has an in-flight commit or repair;
+// issuing another commit races that operation, so callers must wait for it to
+// settle into a terminal or steady state first.
+func projectStatusBlocksCommit(status string) bool {
+	return strings.EqualFold(strings.TrimSpace(status), "Updating")
+}
+
+// currentProjectStatus fetches a project's status string. It returns an empty
+// status (and nil error) when the project cannot be found so that callers can
+// fail open rather than blocking a legitimate commit on a transient lookup gap.
+func currentProjectStatus(client *taikungoclient.Client, projectID int32) (string, *apiErrorInfo) {
+	result, httpResponse, err := client.Client.ProjectsAPI.ProjectsList(context.Background()).Id(projectID).Execute()
+	if err != nil {
+		info := apiErrorInfoFromResponse(httpResponse, err)
+		return "", &info
+	}
+	if result == nil || len(result.GetData()) == 0 {
+		return "", nil
+	}
+	return string(result.GetData()[0].GetStatus()), nil
 }
 
 func commitProjectWithFallback(client *taikungoclient.Client, projectID int32) (projectCommitResult, *apiErrorInfo) {

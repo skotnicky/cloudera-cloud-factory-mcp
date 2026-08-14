@@ -111,7 +111,17 @@ func listProjectStandaloneVMs(client *taikungoclient.Client, args ProjectSearchL
 		vms = result.GetData()
 	}
 
-	if needle := strings.ToLower(strings.TrimSpace(args.Search)); needle != "" {
+	vms = filterStandaloneVMsClientSide(vms, args.Search, args.Offset, args.Limit)
+
+	return createListResponse("standaloneVMs", compactJSON(vms), len(vms), listMessage(len(vms), "standalone VM", "standalone VMs")), nil
+}
+
+// filterStandaloneVMsClientSide applies the documented list filters (search by
+// name substring, then offset, then limit) to project-scoped VMs that were
+// sourced from the details endpoint, which does not accept those parameters.
+// Kept pure (no API dependency) so the workaround stays regression-tested.
+func filterStandaloneVMsClientSide(vms []taikuncore.StandaloneVmsListForDetailsDto, search string, offset, limit int32) []taikuncore.StandaloneVmsListForDetailsDto {
+	if needle := strings.ToLower(strings.TrimSpace(search)); needle != "" {
 		filtered := make([]taikuncore.StandaloneVmsListForDetailsDto, 0, len(vms))
 		for _, vm := range vms {
 			if strings.Contains(strings.ToLower(vm.GetName()), needle) {
@@ -121,18 +131,18 @@ func listProjectStandaloneVMs(client *taikungoclient.Client, args ProjectSearchL
 		vms = filtered
 	}
 
-	if args.Offset > 0 {
-		if int(args.Offset) >= len(vms) {
+	if offset > 0 {
+		if int(offset) >= len(vms) {
 			vms = nil
 		} else {
-			vms = vms[args.Offset:]
+			vms = vms[offset:]
 		}
 	}
-	if args.Limit > 0 && int(args.Limit) < len(vms) {
-		vms = vms[:args.Limit]
+	if limit > 0 && int(limit) < len(vms) {
+		vms = vms[:limit]
 	}
 
-	return createListResponse("standaloneVMs", compactJSON(vms), len(vms), listMessage(len(vms), "standalone VM", "standalone VMs")), nil
+	return vms
 }
 
 func getStandaloneVMDetails(client *taikungoclient.Client, args ProjectSearchListArgs) (*mcp_golang.ToolResponse, error) {
@@ -173,7 +183,8 @@ func createStandaloneVM(client *taikungoclient.Client, args JSONPayloadArgs) (*m
 		CreateStandAloneVmCommand(*command).
 		Execute()
 	if err != nil {
-		return apiErrorInfoFromResponse(httpResponse, err).toolResponse(), nil
+		info := apiErrorInfoFromResponse(httpResponse, err)
+		return info.toolResponseWithHint(standaloneVMNotFoundHint(command, info)), nil
 	}
 	if errorResp := checkResponse(httpResponse, "create standalone VM"); errorResp != nil {
 		return errorResp, nil
@@ -204,6 +215,34 @@ func createStandaloneVM(client *taikungoclient.Client, args JSONPayloadArgs) (*m
 	}
 
 	return createJSONResponse(resp), nil
+}
+
+// standaloneVMNotFoundHint returns an actionable hint when a standalone VM
+// create fails because a flavor or image is "not found". In practice this
+// almost always means the flavor/image exists in the cloud but has not been
+// bound to the project yet, which the raw API error does not make clear.
+func standaloneVMNotFoundHint(command *taikuncore.CreateStandAloneVmCommand, info apiErrorInfo) string {
+	if command == nil {
+		return ""
+	}
+	if !info.isNotFound() && !info.contains("not found") {
+		return ""
+	}
+
+	flavor := strings.TrimSpace(command.GetFlavorName())
+	image := strings.TrimSpace(command.GetImage())
+
+	var hints []string
+	if flavor != "" && info.contains(flavor) {
+		hints = append(hints, fmt.Sprintf("Flavor %q may not be bound to this project; run bind-flavors-to-project first.", flavor))
+	}
+	if image != "" && info.contains(image) {
+		hints = append(hints, fmt.Sprintf("Image %q may not be bound to this project; run bind-images-to-project first.", image))
+	}
+	if len(hints) == 0 {
+		hints = append(hints, "If a flavor or image was rejected as 'not found', it likely needs binding to the project first via bind-flavors-to-project / bind-images-to-project.")
+	}
+	return strings.Join(hints, " ")
 }
 
 func applyCreateStandaloneVMDefaults(command *taikuncore.CreateStandAloneVmCommand) (bool, string) {

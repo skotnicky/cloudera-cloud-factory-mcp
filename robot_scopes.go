@@ -70,6 +70,24 @@ var (
 	robotUserContext   RobotUserContext
 )
 
+// DNS and certificate platform scopes. These follow the platform's
+// scope:<resource>:<action> naming convention (matching cloud-credentials,
+// access-profiles, etc.) and cover the DNS credential store, the project DNS
+// certificate service, and certificate profiles (custom certificate
+// authorities). The backend does not yet grant these to Robot Users, so DNS/cert
+// API calls currently return 403; declaring them here lets robot-user-capabilities
+// report the tools as blocked now and flip them to allowed automatically once the
+// scopes are published and granted. Adjust these string values if the backend
+// finalizes different scope identifiers.
+const (
+	dnsCredentialsReadScope       = "scope:dns-credentials:read"
+	dnsCredentialsWriteScope      = "scope:dns-credentials:write"
+	dnsCertReadScope              = "scope:dns-cert:read"
+	dnsCertWriteScope             = "scope:dns-cert:write"
+	certificateProfilesReadScope  = "scope:certificate-profiles:read"
+	certificateProfilesWriteScope = "scope:certificate-profiles:write"
+)
+
 var toolRequiredScopes = map[string][]string{
 	"server-version":                 {},
 	"refresh-taikun-client":          {},
@@ -114,6 +132,7 @@ var toolRequiredScopes = map[string][]string{
 	"get-kubeconfig":                 {"scope:kubernetes:read"},
 	"list-kubeconfig-roles":          {"scope:kubernetes:read"},
 	"list-kubernetes-resource-kinds": {},
+	"describe-payload":               {},
 	"list-kubernetes-resources":      {"scope:kubernetes:read"},
 	"describe-kubernetes-resource":   {"scope:kubernetes:read"},
 	"delete-kubernetes-resource":     {"scope:kubernetes:write"},
@@ -122,6 +141,7 @@ var toolRequiredScopes = map[string][]string{
 	"bind-flavors-to-project":        {"scope:flavors:write"},
 	"add-server-to-project":          {"scope:servers:write"},
 	"commit-project":                 {"scope:project-deployments"},
+	"preflight-project":              {"scope:projects:read"},
 	"get-project-details":            {"scope:projects:read"},
 	"list-flavors":                   {"scope:flavors:read"},
 	"list-servers":                   {"scope:servers:read"},
@@ -303,34 +323,41 @@ func init() {
 		"create-trusted-registry": {"scope:access-profiles:write"},
 		"edit-trusted-registry":   {"scope:access-profiles:write"},
 		"delete-trusted-registry": {"scope:access-profiles:write"},
-		// DNS certificate service is a project-scoped service.
-		"get-dns-cert-status": {"scope:projects:read"},
-		"enable-dns-cert":     {"scope:project-deployments"},
-		"disable-dns-cert":    {"scope:project-deployments"},
-		"sync-dns-cert":       {"scope:project-deployments"},
-		"validate-dns-cert":   {"scope:projects:read"},
-		// DNS credentials, certificate authorities, and operation credentials use
-		// dedicated platform scopes that this server cannot enumerate ahead of time,
-		// so they are not gated at the MCP layer; the API still enforces access and
-		// returns a clear error when the Robot User lacks permission.
-		"list-dns-credentials":                   {},
-		"dropdown-dns-credentials":               {},
-		"create-dns-credential":                  {},
-		"update-dns-credential":                  {},
-		"delete-dns-credential":                  {},
-		"make-dns-credential-default":            {},
-		"lock-dns-credential":                    {},
-		"attach-dns-credential-to-project":       {},
-		"detach-dns-credential-from-project":     {},
-		"validate-dns-credential":                {},
-		"list-certificate-authorities":           {},
-		"dropdown-certificate-authorities":       {},
-		"create-certificate-authority":           {},
-		"update-certificate-authority":           {},
-		"delete-certificate-authority":           {},
-		"make-certificate-authority-default":     {},
-		"lock-certificate-authority":             {},
-		"validate-certificate-authority":         {},
+		// DNS credentials, the DNS certificate service, and certificate profiles
+		// are gated by dedicated platform scopes that follow the same
+		// scope:<resource>:<action> convention as the rest of the platform
+		// (e.g. scope:cloud-credentials:read/write). These scopes are not yet
+		// granted to Robot Users on the backend, so the API currently returns
+		// 403 for every DNS/cert call. Mapping the anticipated scope names here
+		// means robot-user-capabilities correctly reports these tools as blocked
+		// today and will automatically flip them to allowed once the backend
+		// publishes and grants the scopes. If the backend finalizes different
+		// scope identifiers, only these string constants need to change.
+		"list-dns-credentials":               {dnsCredentialsReadScope},
+		"dropdown-dns-credentials":           {dnsCredentialsReadScope},
+		"create-dns-credential":              {dnsCredentialsWriteScope},
+		"update-dns-credential":              {dnsCredentialsWriteScope},
+		"delete-dns-credential":              {dnsCredentialsWriteScope},
+		"make-dns-credential-default":        {dnsCredentialsWriteScope},
+		"lock-dns-credential":                {dnsCredentialsWriteScope},
+		"attach-dns-credential-to-project":   {dnsCredentialsWriteScope},
+		"detach-dns-credential-from-project": {dnsCredentialsWriteScope},
+		"validate-dns-credential":            {dnsCredentialsReadScope},
+		// DNS certificate service (project-scoped ACME/DNS-01 certificate issuance).
+		"get-dns-cert-status": {dnsCertReadScope},
+		"enable-dns-cert":     {dnsCertWriteScope},
+		"disable-dns-cert":    {dnsCertWriteScope},
+		"sync-dns-cert":       {dnsCertWriteScope},
+		"validate-dns-cert":   {dnsCertReadScope},
+		// Certificate profiles (custom certificate authorities).
+		"list-certificate-authorities":       {certificateProfilesReadScope},
+		"dropdown-certificate-authorities":   {certificateProfilesReadScope},
+		"create-certificate-authority":       {certificateProfilesWriteScope},
+		"update-certificate-authority":       {certificateProfilesWriteScope},
+		"delete-certificate-authority":       {certificateProfilesWriteScope},
+		"make-certificate-authority-default": {certificateProfilesWriteScope},
+		"lock-certificate-authority":         {certificateProfilesWriteScope},
+		"validate-certificate-authority":     {certificateProfilesReadScope},
 	} {
 		toolRequiredScopes[toolName] = requiredScopes
 	}
@@ -362,7 +389,7 @@ func parseRobotUserContext(body []byte) (RobotUserContext, error) {
 		AccessKey:        gjson.GetBytes(body, "accessKey").String(),
 		OrganizationID:   int32(gjson.GetBytes(body, "organizationId").Int()),
 		OrganizationName: gjson.GetBytes(body, "organizationName").String(),
-		CreatedBy:        gjson.GetBytes(body, "createdBy").String(),
+		CreatedBy:        auditUserNameFromJSON(gjson.GetBytes(body, "createdBy")),
 		Name:             gjson.GetBytes(body, "name").String(),
 		Description:      gjson.GetBytes(body, "description").String(),
 		IsActive:         gjson.GetBytes(body, "isActive").Bool(),
@@ -717,21 +744,19 @@ func authorizeTool(reqCtx context.Context, toolName string) *mcp_golang.ToolResp
 
 // shouldAdvertiseTool decides whether a tool is registered into tools/list.
 //
-// Manifest Phase 1 (non-breaking): in stdio transport the Robot User context is
-// known at startup, so tools the user is not allowed to call are not advertised
-// at all (shrinking the manifest). In HTTP transport the global client is nil
-// (credentials are per-request and tools/list is served without them), so all
-// tools are advertised and per-request authorization still blocks disallowed
-// calls. Scope-discovery failures fail open so we never hide the whole manifest.
+// Every scoped tool is always advertised, regardless of transport or the Robot
+// User's scopes. Call-time authorization (authorizeTool) still enforces access
+// and returns an immediate scope-denied JSON response for blocked tools.
+//
+// We intentionally do NOT hide blocked tools: MCP clients (including Cursor)
+// cache the tools/list manifest at connect time and do not re-fetch it when the
+// server's advertised set changes. If a blocked tool were unregistered, a client
+// working from a stale manifest would call a tool with no handler and hang until
+// the request timed out. Keeping every tool registered means such calls fail
+// fast with a clear "missing scopes" error instead, and the manifest stays
+// consistent with reality after any client reload.
 func shouldAdvertiseTool(name string) bool {
-	if taikunClient == nil {
-		return true
-	}
-	robotCtx := getRobotUserContext()
-	if robotCtx.ScopeDiscoveryError != "" {
-		return true
-	}
-	return evaluateToolScopeAccess(name, robotCtx.Scopes).Status != "blocked"
+	return true
 }
 
 func registerScopedTool[T any](server *mcp_golang.Server, name, description string, handler func(ctx context.Context, args T) (*mcp_golang.ToolResponse, error)) error {

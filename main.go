@@ -276,7 +276,7 @@ type CreateClusterArgs struct {
 	WorkerFlavor        string `json:"workerFlavor,omitempty" jsonschema:"description=Flavor override for worker nodes (optional)"`
 	DiskSizeGB          int64  `json:"diskSizeGb,omitempty" jsonschema:"description=Root disk size in GB for all nodes (default 50 when omitted; some clouds require an explicit minimum)"`
 	VerifyTimeout       int32  `json:"verifyTimeout,omitempty" jsonschema:"description=Seconds to wait when verifying node creation (default: 300)"`
-	WaitForCreation     *bool  `json:"waitForCreation,omitempty" jsonschema:"description=Wait for project readiness after commit (default: true)"`
+	WaitForCreation     *bool  `json:"waitForCreation,omitempty" jsonschema:"description=Block until the project is Ready after commit (default: false). A full initial deploy often takes 10-30 minutes and can exceed MCP client request timeouts; leave false and poll wait-for-project/get-project-details instead."`
 	Timeout             int32  `json:"timeout,omitempty" jsonschema:"description=Timeout in seconds used by wait-for-project when waitForCreation=true (default: 1800)"`
 }
 
@@ -929,7 +929,7 @@ func main() {
 	}
 	logger.Println("Registered create-project tool")
 
-	err = registerScopedTool(server, "create-cluster", "Create a Kubernetes cluster end-to-end (project, nodes, commit, optional wait) using profile-aware defaults and cloud-credential flavor discovery", func(ctx context.Context, args CreateClusterArgs) (*mcp_golang.ToolResponse, error) {
+	err = registerScopedTool(server, "create-cluster", "Create a Kubernetes cluster end-to-end (project, nodes, commit) using profile-aware defaults and cloud-credential flavor discovery. Returns once the commit is accepted; the cluster then provisions asynchronously (often 10-30 minutes). Poll wait-for-project or get-project-details for readiness. Set waitForCreation=true only if you accept a long-blocking call that may exceed MCP client timeouts.", func(ctx context.Context, args CreateClusterArgs) (*mcp_golang.ToolResponse, error) {
 		return createCluster(ctx, clientFromContext(ctx), args)
 	})
 	if err != nil {
@@ -1049,13 +1049,29 @@ func main() {
 	}
 	logger.Println("Registered add-server-to-project tool")
 
-	err = registerScopedTool(server, "commit-project", "Commit and provision pending project infrastructure in the cloud. For Kubernetes changes, commit-project validates that all Kubemaster nodes are at least 4 CPUs / 4GB RAM and requires at least one Kubeworker at 4 CPUs / 4GB RAM when monitoring is enabled. For VM-only changes, this tool automatically falls back to the VM commit endpoint used by the UI when the cluster-style commit path is not applicable. Do not call while project status is Updating; full initial Kubernetes deploy often takes 10-30 minutes.", func(ctx context.Context, args CommitProjectArgs) (*mcp_golang.ToolResponse, error) {
+	err = registerScopedTool(server, "commit-project", "Commit and provision pending project infrastructure in the cloud. For Kubernetes changes, commit-project validates that all Kubemaster nodes are at least 4 CPUs / 4GB RAM and requires at least one Kubeworker at 4 CPUs / 4GB RAM when monitoring is enabled. For VM-only changes, this tool automatically falls back to the VM commit endpoint used by the UI when the cluster-style commit path is not applicable. If the project is already Updating (a commit or repair is in progress) this tool returns an error asking you to wait; poll get-project-details or wait-for-project first. A full initial Kubernetes deploy often takes 10-30 minutes.", func(ctx context.Context, args CommitProjectArgs) (*mcp_golang.ToolResponse, error) {
 		return commitProject(clientFromContext(ctx), args)
 	})
 	if err != nil {
 		logger.Fatalf("Failed to register commit-project tool: %v", err)
 	}
 	logger.Println("Registered commit-project tool")
+
+	err = registerScopedTool(server, "describe-payload", "Describe the JSON payload a tool expects, so you don't have to inspect API DTOs or Swagger. Pass a tool name (e.g. create-standalone-vm) or a command type name (e.g. CreateStandAloneVmCommand) to get its fields, types, optional/nullable flags, nested objects, and an example skeleton. Call with no arguments to list every known payload and tool alias.", func(ctx context.Context, args DescribePayloadArgs) (*mcp_golang.ToolResponse, error) {
+		return describePayload(args)
+	})
+	if err != nil {
+		logger.Fatalf("Failed to register describe-payload tool: %v", err)
+	}
+	logger.Println("Registered describe-payload tool")
+
+	err = registerScopedTool(server, "preflight-project", "Check whether a project is ready to commit and to host catalog/app deployments. Reports project status, Kubemaster/Kubeworker sizing against commit minimums, and kubeconfig availability as a single pass/warn/fail checklist so prerequisites are surfaced before commit-project or app-install fail.", func(ctx context.Context, args GetProjectDetailsArgs) (*mcp_golang.ToolResponse, error) {
+		return preflightProject(clientFromContext(ctx), args)
+	})
+	if err != nil {
+		logger.Fatalf("Failed to register preflight-project tool: %v", err)
+	}
+	logger.Println("Registered preflight-project tool")
 
 	err = registerScopedTool(server, "get-project-details", "Get detailed status of a project", func(ctx context.Context, args GetProjectDetailsArgs) (*mcp_golang.ToolResponse, error) {
 		return getProjectDetails(clientFromContext(ctx), args)
@@ -1669,28 +1685,28 @@ func main() {
 	})
 
 	// Certificate authorities (custom CA / certificate profiles).
-	mustRegisterScopedTool(server, "list-certificate-authorities", "List custom certificate authorities with optional filtering", func(ctx context.Context, args SearchListArgs) (*mcp_golang.ToolResponse, error) {
+	mustRegisterScopedTool(server, "list-certificate-authorities", "List certificate profiles (custom certificate authorities) with optional filtering", func(ctx context.Context, args SearchListArgs) (*mcp_golang.ToolResponse, error) {
 		return listCertificateAuthorities(clientFromContext(ctx), args)
 	})
-	mustRegisterScopedTool(server, "dropdown-certificate-authorities", "List certificate authority dropdown entries", func(ctx context.Context, args SearchListArgs) (*mcp_golang.ToolResponse, error) {
+	mustRegisterScopedTool(server, "dropdown-certificate-authorities", "List certificate profile (certificate authority) dropdown entries", func(ctx context.Context, args SearchListArgs) (*mcp_golang.ToolResponse, error) {
 		return dropdownCertificateAuthorities(clientFromContext(ctx), args)
 	})
-	mustRegisterScopedTool(server, "create-certificate-authority", "Create a custom certificate authority (payload: CustomCertificateAuthorityCreateCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+	mustRegisterScopedTool(server, "create-certificate-authority", "Create a certificate profile / custom certificate authority (payload: CertificateProfileCreateCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
 		return createCertificateAuthority(clientFromContext(ctx), args)
 	})
-	mustRegisterScopedTool(server, "update-certificate-authority", "Update a custom certificate authority (payload: CustomCertificateAuthorityUpdateCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+	mustRegisterScopedTool(server, "update-certificate-authority", "Update a certificate profile / custom certificate authority (payload: CertificateProfileUpdateCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
 		return updateCertificateAuthority(clientFromContext(ctx), args)
 	})
-	mustRegisterScopedTool(server, "delete-certificate-authority", "Delete a custom certificate authority", func(ctx context.Context, args IDArgs) (*mcp_golang.ToolResponse, error) {
+	mustRegisterScopedTool(server, "delete-certificate-authority", "Delete a certificate profile / custom certificate authority", func(ctx context.Context, args IDArgs) (*mcp_golang.ToolResponse, error) {
 		return deleteCertificateAuthority(clientFromContext(ctx), args)
 	})
-	mustRegisterScopedTool(server, "make-certificate-authority-default", "Make a custom certificate authority default (payload: CustomCertificateAuthorityMakeDefaultCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+	mustRegisterScopedTool(server, "make-certificate-authority-default", "Make a certificate profile / custom certificate authority default (payload: CertificateProfileMakeDefaultCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
 		return makeCertificateAuthorityDefault(clientFromContext(ctx), args)
 	})
-	mustRegisterScopedTool(server, "lock-certificate-authority", "Lock or unlock a custom certificate authority (payload: CustomCertificateAuthorityLockCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+	mustRegisterScopedTool(server, "lock-certificate-authority", "Lock or unlock a certificate profile / custom certificate authority (payload: CertificateProfileLockCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
 		return lockCertificateAuthority(clientFromContext(ctx), args)
 	})
-	mustRegisterScopedTool(server, "validate-certificate-authority", "Validate a custom certificate authority (payload: CustomCertificateAuthorityValidateCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
+	mustRegisterScopedTool(server, "validate-certificate-authority", "Validate a certificate profile / custom certificate authority (payload: CertificateProfileValidateCommand)", func(ctx context.Context, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {
 		return validateCertificateAuthority(clientFromContext(ctx), args)
 	})
 

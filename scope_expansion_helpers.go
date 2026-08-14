@@ -271,3 +271,15 @@ func (e apiErrorInfo) toolResponse() *mcp_golang.ToolResponse {
 		Error: e.Message,
 	})
 }
+
+// toolResponseWithHint returns the API error augmented with an actionable hint
+// in Details. When hint is empty it is equivalent to toolResponse().
+func (e apiErrorInfo) toolResponseWithHint(hint string) *mcp_golang.ToolResponse {
+	if strings.TrimSpace(hint) == "" {
+		return e.toolResponse()
+	}
+	return createJSONResponse(ErrorResponse{
+		Error:   e.Message,
+		Details: hint,
+	})
+}
