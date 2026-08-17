@@ -85,6 +85,7 @@ When unsure about API response fields:
 - **Project Status `Updating`**: Treat `Updating` as an ongoing commit or repair operation. Do not call `commit-project` again while a project is `Updating`; wait for it to settle into a terminal or steady state first.
 - **Sizing**: Treat Kubernetes control plane nodes (`Kubemaster`) as minimum 4 CPU / 4 GB RAM. When monitoring is enabled, ensure at least one `Kubeworker` is also at least 4 CPU / 4 GB RAM. This is validated by `commit-project`, which fails fast until these minimums are met. Bastion can use smaller sizing such as 2 CPU / 2 GB RAM for basic setups.
 - **Virtual Clusters**: Agents can create virtual clusters within projects to isolate workloads while saving resources; ideal for testing and fast iteration.
+- **Project Access IP**: Use `get-project-access-ip` for the external entry point of a project. Default Ingress class `taikun` (Traefik) and Gateway API routes are exposed through this Access IP — not through server `ipAddress` values from `list-servers` (those are usually private/internal on OpenStack and similar private clouds). On NodePort setups, find Traefik ports via `list-kubernetes-resources` (Service `taikun-ingress-traefik` in namespace `taikun-ingress`). Point ingress hostnames / DNS A records at the Access IP.
 
 ## Project Structure
 

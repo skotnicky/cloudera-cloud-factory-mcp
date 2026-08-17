@@ -766,3 +766,45 @@ func TestResolveCreateClusterFlavorsFailsWhenWorkerOverrideBelowCommitMinimum(t 
 		t.Fatalf("unexpected error: %+v", payload)
 	}
 }
+
+func TestGetProjectAccessIP(t *testing.T) {
+	projectID := int32(318)
+	accessIP := "203.0.113.10"
+
+	project := buildServersListForDetails(projectID, 1, true, nil).Project
+	project.AccessIp = accessIP
+	project.CloudType = taikuncore.ECLOUDCREDENTIALTYPE_OPENSTACK
+	body := mustMarshalJSONForDeploy(t, taikuncore.ServersListForDetails{
+		Project: project,
+	})
+
+	client, callCount, closeServer := newQueuedResponseClient(t, []queuedHTTPResponse{
+		{statusCode: http.StatusOK, body: body},
+	})
+	defer closeServer()
+
+	resp, err := getProjectAccessIP(client, GetProjectDetailsArgs{ProjectId: projectID})
+	if err != nil {
+		t.Fatalf("getProjectAccessIP returned error: %v", err)
+	}
+	payload, ok := parseToolResponsePayload(resp)
+	if !ok {
+		t.Fatal("expected JSON payload")
+	}
+	if payload["accessIp"] != accessIP {
+		t.Fatalf("expected accessIp %q, got %+v", accessIP, payload["accessIp"])
+	}
+	if payload["cloudType"] != string(taikuncore.ECLOUDCREDENTIALTYPE_OPENSTACK) {
+		t.Fatalf("unexpected cloudType: %+v", payload["cloudType"])
+	}
+	hints, ok := payload["hints"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected hints object, got %+v", payload["hints"])
+	}
+	if hints["ingressExposure"] == "" || hints["gatewayExposure"] == "" || hints["serverIPsNote"] == "" {
+		t.Fatalf("expected ingress, gateway, and server IP hints, got %+v", hints)
+	}
+	if callCount.Load() != 1 {
+		t.Fatalf("expected one API call, got %d", callCount.Load())
+	}
+}

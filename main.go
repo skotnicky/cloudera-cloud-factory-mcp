@@ -51,6 +51,26 @@ const (
 	mcpServerName  = "cloudera-cloud-factory-mcp"
 )
 
+// normalizeAPIHost strips an accidental URL scheme or path from TAIKUN_API_HOST and
+// maps common CCF UI hostnames (app.*) to the API hostname (api.*). taikungoclient
+// expects a bare API hostname (e.g. api.ccf-dev1.osc1.sjc.cloudera.com).
+func normalizeAPIHost(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return ""
+	}
+	host = strings.TrimPrefix(host, "https://")
+	host = strings.TrimPrefix(host, "http://")
+	if idx := strings.Index(host, "/"); idx >= 0 {
+		host = host[:idx]
+	}
+	host = strings.TrimSuffix(host, "/")
+	if strings.HasPrefix(host, "app.") {
+		host = "api." + strings.TrimPrefix(host, "app.")
+	}
+	return host
+}
+
 // Response structs for JSON formatting
 type ErrorResponse struct {
 	Error   string `json:"error"`
@@ -425,6 +445,25 @@ type ProjectStatusResponse struct {
 	CloudType string `json:"cloudType"`
 }
 
+type ProjectAccessIPHints struct {
+	IngressExposure string `json:"ingressExposure"`
+	GatewayExposure string `json:"gatewayExposure"`
+	ServerIPsNote   string `json:"serverIPsNote"`
+	DNSNote         string `json:"dnsNote"`
+}
+
+type ProjectAccessIPResponse struct {
+	ProjectID   int32                `json:"projectId"`
+	ProjectName string               `json:"projectName"`
+	AccessIP    string               `json:"accessIp"`
+	CloudType   string               `json:"cloudType"`
+	Status      string               `json:"status"`
+	Health      string               `json:"health"`
+	Hints       ProjectAccessIPHints `json:"hints"`
+	Success     bool                 `json:"success"`
+	Message     string               `json:"message"`
+}
+
 // createJSONResponse creates a JSON response using NewTextContent
 func createJSONResponse(data interface{}) *mcp_golang.ToolResponse {
 	jsonData, err := json.Marshal(data)
@@ -494,7 +533,7 @@ type robotUserAuthConfig struct {
 
 func resolveRobotUserAuthConfig(getenv func(string) string) (robotUserAuthConfig, error) {
 	cfg := robotUserAuthConfig{
-		APIHost:    strings.TrimSpace(getenv("TAIKUN_API_HOST")),
+		APIHost:    normalizeAPIHost(getenv("TAIKUN_API_HOST")),
 		DomainName: strings.TrimSpace(getenv("TAIKUN_DOMAIN_NAME")),
 		AccessKey:  strings.TrimSpace(getenv("TAIKUN_ACCESS_KEY")),
 		SecretKey:  strings.TrimSpace(getenv("TAIKUN_SECRET_KEY")),
@@ -1073,13 +1112,21 @@ func main() {
 	}
 	logger.Println("Registered preflight-project tool")
 
-	err = registerScopedTool(server, "get-project-details", "Get detailed status of a project", func(ctx context.Context, args GetProjectDetailsArgs) (*mcp_golang.ToolResponse, error) {
+	err = registerScopedTool(server, "get-project-details", "Get detailed status of a project. For ingress and Gateway API reachability, also call get-project-access-ip — server private IPs from list-servers are not the external entry point on private clouds.", func(ctx context.Context, args GetProjectDetailsArgs) (*mcp_golang.ToolResponse, error) {
 		return getProjectDetails(clientFromContext(ctx), args)
 	})
 	if err != nil {
 		logger.Fatalf("Failed to register get-project-details tool: %v", err)
 	}
 	logger.Println("Registered get-project-details tool")
+
+	err = registerScopedTool(server, "get-project-access-ip", "Get the project Access IP from GET /api/v1/servers/{projectId} (project.accessIp). This is the external entry point for default Ingress class taikun and Gateway API routes. On OpenStack and similar private clouds, Traefik is typically NodePort on this IP — not on server private IPs from list-servers.", func(ctx context.Context, args GetProjectDetailsArgs) (*mcp_golang.ToolResponse, error) {
+		return getProjectAccessIP(clientFromContext(ctx), args)
+	})
+	if err != nil {
+		logger.Fatalf("Failed to register get-project-access-ip tool: %v", err)
+	}
+	logger.Println("Registered get-project-access-ip tool")
 
 	err = registerScopedTool(server, "list-flavors", "List available flavors for a cloud credential", func(ctx context.Context, args ListFlavorsArgs) (*mcp_golang.ToolResponse, error) {
 		return listFlavors(clientFromContext(ctx), args)
@@ -1089,7 +1136,7 @@ func main() {
 	}
 	logger.Println("Registered list-flavors tool")
 
-	err = registerScopedTool(server, "list-servers", "List servers in a project", func(ctx context.Context, args ListServersArgs) (*mcp_golang.ToolResponse, error) {
+	err = registerScopedTool(server, "list-servers", "List servers in a project. ipAddress values are typically private/internal addresses. For ingress and Gateway API traffic use get-project-access-ip instead.", func(ctx context.Context, args ListServersArgs) (*mcp_golang.ToolResponse, error) {
 		return listServers(clientFromContext(ctx), args)
 	})
 	if err != nil {
@@ -1441,7 +1488,7 @@ func main() {
 	mustRegisterScopedTool(server, "disable-project-spot-vms", "Disable spot VMs for a project", func(ctx context.Context, args ProjectIDArgs) (*mcp_golang.ToolResponse, error) {
 		return disableProjectSpotVMs(clientFromContext(ctx), args)
 	})
-	mustRegisterScopedTool(server, "get-project-service-status", "Get current project service settings and bindings", func(ctx context.Context, args ProjectIDArgs) (*mcp_golang.ToolResponse, error) {
+	mustRegisterScopedTool(server, "get-project-service-status", "Get current project service settings and bindings, including project accessIp (external entry point for default Ingress class taikun and Gateway API routes)", func(ctx context.Context, args ProjectIDArgs) (*mcp_golang.ToolResponse, error) {
 		return getProjectServiceStatus(clientFromContext(ctx), args)
 	})
 

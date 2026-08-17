@@ -67,6 +67,7 @@ type ProjectSpotServiceStatus struct {
 type ProjectServiceStatusResponse struct {
 	ProjectID         int32                           `json:"projectId"`
 	ProjectName       string                          `json:"projectName"`
+	AccessIP          string                          `json:"accessIp,omitempty"`
 	Status            string                          `json:"status"`
 	Health            string                          `json:"health"`
 	CloudType         string                          `json:"cloudType"`
@@ -135,6 +136,7 @@ func buildProjectServiceStatusResponse(project taikuncore.ProjectDetailsForServe
 	return ProjectServiceStatusResponse{
 		ProjectID:         project.GetId(),
 		ProjectName:       project.GetName(),
+		AccessIP:          strings.TrimSpace(project.GetAccessIp()),
 		Status:            string(project.GetStatus()),
 		Health:            string(project.GetHealth()),
 		CloudType:         string(project.GetCloudType()),

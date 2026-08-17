@@ -70,15 +70,10 @@ var (
 	robotUserContext   RobotUserContext
 )
 
-// DNS and certificate platform scopes. These follow the platform's
-// scope:<resource>:<action> naming convention (matching cloud-credentials,
-// access-profiles, etc.) and cover the DNS credential store, the project DNS
-// certificate service, and certificate profiles (custom certificate
-// authorities). The backend does not yet grant these to Robot Users, so DNS/cert
-// API calls currently return 403; declaring them here lets robot-user-capabilities
-// report the tools as blocked now and flip them to allowed automatically once the
-// scopes are published and granted. Adjust these string values if the backend
-// finalizes different scope identifiers.
+// DNS and certificate platform scopes. The UI grants a single combined
+// scope:dns-cert (like scope:autoscaling) that covers DNS credentials, custom
+// CAs, and project dns-cert operations. MCP tools still declare split
+// read/write requirements; scopeAliases maps the combined scope to those.
 const (
 	dnsCredentialsReadScope       = "scope:dns-credentials:read"
 	dnsCredentialsWriteScope      = "scope:dns-credentials:write"
@@ -86,7 +81,33 @@ const (
 	dnsCertWriteScope             = "scope:dns-cert:write"
 	certificateProfilesReadScope  = "scope:certificate-profiles:read"
 	certificateProfilesWriteScope = "scope:certificate-profiles:write"
+	dnsCertCombinedScope          = "scope:dns-cert"
 )
+
+// scopeAliases maps combined platform scopes to the split read/write scopes
+// expected by individual MCP tools.
+var scopeAliases = map[string][]string{
+	dnsCertCombinedScope: {
+		dnsCredentialsReadScope,
+		dnsCredentialsWriteScope,
+		dnsCertReadScope,
+		dnsCertWriteScope,
+		certificateProfilesReadScope,
+		certificateProfilesWriteScope,
+	},
+}
+
+func assignedScopeSatisfies(assignedScopes []string, required string) bool {
+	if slices.Contains(assignedScopes, required) {
+		return true
+	}
+	for _, assigned := range assignedScopes {
+		if implied, ok := scopeAliases[assigned]; ok && slices.Contains(implied, required) {
+			return true
+		}
+	}
+	return false
+}
 
 var toolRequiredScopes = map[string][]string{
 	"server-version":                 {},
@@ -142,7 +163,8 @@ var toolRequiredScopes = map[string][]string{
 	"add-server-to-project":          {"scope:servers:write"},
 	"commit-project":                 {"scope:project-deployments"},
 	"preflight-project":              {"scope:projects:read"},
-	"get-project-details":            {"scope:projects:read"},
+		"get-project-details":            {"scope:projects:read"},
+		"get-project-access-ip":          {"scope:projects:read"},
 	"list-flavors":                   {"scope:flavors:read"},
 	"list-servers":                   {"scope:servers:read"},
 	"delete-servers-from-project":    {"scope:servers:write"},
@@ -529,7 +551,7 @@ func evaluateToolScopeAccess(toolName string, assignedScopes []string) ToolScope
 
 	missing := make([]string, 0, len(requiredScopes))
 	for _, required := range requiredScopes {
-		if !slices.Contains(assignedScopes, required) {
+		if !assignedScopeSatisfies(assignedScopes, required) {
 			missing = append(missing, required)
 		}
 	}

@@ -44,6 +44,20 @@ func TestResponseStructMarshaling(t *testing.T) {
 				Type:   "Kubernetes",
 			},
 		},
+		{
+			name: "ProjectAccessIPResponse",
+			data: ProjectAccessIPResponse{
+				ProjectID:   318,
+				ProjectName: "mcp-dns-grafana",
+				AccessIP:    "203.0.113.10",
+				CloudType:   "OPENSTACK",
+				Status:      "Ready",
+				Health:      "Healthy",
+				Hints:       projectAccessIPHints(),
+				Success:     true,
+				Message:     "Project 318 access IP is \"203.0.113.10\"",
+			},
+		},
 	}
 
 	for _, tt := range tests {

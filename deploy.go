@@ -1126,6 +1126,52 @@ func commitProjectNeedsVMMessage(message string) bool {
 		strings.Contains(msg, "master")
 }
 
+func projectAccessIPHints() ProjectAccessIPHints {
+	return ProjectAccessIPHints{
+		IngressExposure: "Default Ingress class taikun (Traefik) is exposed through the project Access IP. On many private clouds Traefik uses NodePort; find HTTP/HTTPS ports with list-kubernetes-resources (Service taikun-ingress-traefik in namespace taikun-ingress). Reach apps at http(s)://<accessIp>:<nodePort> with the ingress Host header, or via DNS when records point to the Access IP.",
+		GatewayExposure: "Gateway API routes on the default taikun gateway are also exposed through the project Access IP, not through individual server private IPs from list-servers.",
+		ServerIPsNote:   "Server ipAddress values from list-servers are typically private/internal cluster addresses. Do not use them as the ingress entry point on OpenStack and similar private clouds.",
+		DNSNote:         "Ingress hostnames (including DNS cert automation) should resolve to the project Access IP. If external-dns is not running, create the A record manually in your DNS provider.",
+	}
+}
+
+func getProjectAccessIP(client *taikungoclient.Client, args GetProjectDetailsArgs) (*mcp_golang.ToolResponse, error) {
+	ctx := context.Background()
+
+	result, httpResponse, err := client.Client.ServersAPI.ServersDetails(ctx, args.ProjectId).Execute()
+	if err != nil {
+		return createError(httpResponse, err), nil
+	}
+	if errorResp := checkResponse(httpResponse, "get project access IP"); errorResp != nil {
+		return errorResp, nil
+	}
+	if result == nil {
+		return createJSONResponse(ErrorResponse{
+			Error: fmt.Sprintf("Project with ID %d not found", args.ProjectId),
+		}), nil
+	}
+
+	project := result.GetProject()
+	accessIP := strings.TrimSpace(project.GetAccessIp())
+
+	message := fmt.Sprintf("Project %d access IP is %q", args.ProjectId, accessIP)
+	if accessIP == "" {
+		message = fmt.Sprintf("Project %d has no access IP assigned yet; wait for the project to reach Ready after commit", args.ProjectId)
+	}
+
+	return createJSONResponse(ProjectAccessIPResponse{
+		ProjectID:   project.GetId(),
+		ProjectName: project.GetName(),
+		AccessIP:    accessIP,
+		CloudType:   string(project.GetCloudType()),
+		Status:      string(project.GetStatus()),
+		Health:      string(project.GetHealth()),
+		Hints:       projectAccessIPHints(),
+		Success:     true,
+		Message:     message,
+	}), nil
+}
+
 func getProjectDetails(client *taikungoclient.Client, args GetProjectDetailsArgs) (*mcp_golang.ToolResponse, error) {
 	ctx := context.Background()
 

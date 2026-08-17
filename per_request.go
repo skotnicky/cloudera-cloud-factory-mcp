@@ -75,7 +75,7 @@ func newCredentialKeySalt() []byte {
 func credentialCacheKey(accessKey, secretKey, apiHost string) string {
 	accessKey = strings.TrimSpace(accessKey)
 	secretKey = strings.TrimSpace(secretKey)
-	apiHost = strings.TrimSpace(apiHost)
+	apiHost = normalizeAPIHost(apiHost)
 	if apiHost == "" {
 		apiHost = defaultAPIHost
 	}
@@ -93,7 +93,7 @@ func credentialCacheKey(accessKey, secretKey, apiHost string) string {
 func createTaikunClientFromCreds(accessKey, secretKey, apiHost string) (*taikungoclient.Client, error) {
 	accessKey = strings.TrimSpace(accessKey)
 	secretKey = strings.TrimSpace(secretKey)
-	apiHost = strings.TrimSpace(apiHost)
+	apiHost = normalizeAPIHost(apiHost)
 	if apiHost == "" {
 		apiHost = defaultAPIHost
 	}

@@ -35,6 +35,37 @@ func TestResolveRobotUserAuthConfigDefaultsHost(t *testing.T) {
 	}
 }
 
+func TestResolveRobotUserAuthConfigStripsURLSchemeFromAPIHost(t *testing.T) {
+	cfg, err := resolveRobotUserAuthConfig(mapGetenv(map[string]string{
+		"TAIKUN_ACCESS_KEY": "robot-access",
+		"TAIKUN_SECRET_KEY": "robot-secret",
+		"TAIKUN_API_HOST":   "https://app.ccf-dev1.osc1.sjc.cloudera.com/",
+	}))
+	if err != nil {
+		t.Fatalf("expected valid robot user config, got error: %v", err)
+	}
+	if cfg.APIHost != "api.ccf-dev1.osc1.sjc.cloudera.com" {
+		t.Fatalf("expected app UI host mapped to api API host, got %q", cfg.APIHost)
+	}
+}
+
+func TestNormalizeAPIHost(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"", ""},
+		{"api.example.test", "api.example.test"},
+		{"https://api.example.test", "api.example.test"},
+		{"http://api.example.test/path", "api.example.test"},
+		{"  https://app.ccf-dev1.osc1.sjc.cloudera.com/  ", "api.ccf-dev1.osc1.sjc.cloudera.com"},
+	}
+	for _, tc := range tests {
+		if got := normalizeAPIHost(tc.in); got != tc.want {
+			t.Errorf("normalizeAPIHost(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestResolveRobotUserAuthConfigSupportsOptionalDomainName(t *testing.T) {
 	cfg, err := resolveRobotUserAuthConfig(mapGetenv(map[string]string{
 		"TAIKUN_ACCESS_KEY":  "robot-access",
@@ -110,6 +141,34 @@ func TestEvaluateToolScopeAccessAllowsNoScopeTools(t *testing.T) {
 	}
 	if len(access.RequiredScopes) != 0 {
 		t.Fatalf("expected no required scopes, got %+v", access.RequiredScopes)
+	}
+}
+
+func TestEvaluateToolScopeAccessDnsCertCombinedScopeAllowsRead(t *testing.T) {
+	access := evaluateToolScopeAccess("get-dns-cert-status", []string{dnsCertCombinedScope})
+	if access.Status != "allowed" {
+		t.Fatalf("expected combined dns-cert scope to allow read tools, got %+v", access)
+	}
+}
+
+func TestEvaluateToolScopeAccessDnsCertCombinedScopeAllowsWrite(t *testing.T) {
+	access := evaluateToolScopeAccess("enable-dns-cert", []string{dnsCertCombinedScope})
+	if access.Status != "allowed" {
+		t.Fatalf("expected combined dns-cert scope to allow write tools, got %+v", access)
+	}
+}
+
+func TestEvaluateToolScopeAccessDnsCertCombinedScopeGrantsCredentials(t *testing.T) {
+	access := evaluateToolScopeAccess("list-dns-credentials", []string{dnsCertCombinedScope})
+	if access.Status != "allowed" {
+		t.Fatalf("expected combined dns-cert scope to allow dns-credentials tools, got %+v", access)
+	}
+}
+
+func TestEvaluateToolScopeAccessDnsCertCombinedScopeGrantsCertificateProfiles(t *testing.T) {
+	access := evaluateToolScopeAccess("list-certificate-authorities", []string{dnsCertCombinedScope})
+	if access.Status != "allowed" {
+		t.Fatalf("expected combined dns-cert scope to allow certificate profile tools, got %+v", access)
 	}
 }
 

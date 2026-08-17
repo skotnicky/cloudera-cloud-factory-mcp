@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
 
 	"github.com/itera-io/taikungoclient"
 	taikuncore "github.com/itera-io/taikungoclient/client"
@@ -159,17 +162,51 @@ func validateDNSCredential(client *taikungoclient.Client, args JSONPayloadArgs) 
 
 func getDNSCertStatus(client *taikungoclient.Client, args ProjectIDArgs) (*mcp_golang.ToolResponse, error) {
 	result, httpResponse, err := client.Client.DnsCertAPI.DnsCertStatus(context.Background(), args.ProjectID).Execute()
-	if err != nil {
-		return createError(httpResponse, err), nil
+	if err == nil {
+		if errorResp := checkResponse(httpResponse, "get DNS certificate status"); errorResp != nil {
+			return errorResp, nil
+		}
+		return createJSONResponse(map[string]interface{}{
+			"result":  compactJSON(result),
+			"message": "Retrieved DNS certificate status",
+			"success": true,
+		}), nil
 	}
-	if errorResp := checkResponse(httpResponse, "get DNS certificate status"); errorResp != nil {
-		return errorResp, nil
+
+	// dev1 returns projectStatus as a numeric enum (e.g. 800) while the client expects a string.
+	if httpResponse != nil && httpResponse.StatusCode >= http.StatusOK && httpResponse.StatusCode < http.StatusMultipleChoices {
+		bodyBytes, readErr := readResponseBodyPreservingBody(httpResponse)
+		if readErr == nil {
+			var raw map[string]interface{}
+			if json.Unmarshal(bodyBytes, &raw) == nil {
+				normalizeDNSCertStatusProjectStatus(raw)
+				return createJSONResponse(map[string]interface{}{
+					"result":  raw,
+					"message": "Retrieved DNS certificate status",
+					"success": true,
+				}), nil
+			}
+		}
 	}
-	return createJSONResponse(map[string]interface{}{
-		"result":  compactJSON(result),
-		"message": "Retrieved DNS certificate status",
-		"success": true,
-	}), nil
+
+	return createError(httpResponse, err), nil
+}
+
+func normalizeDNSCertStatusProjectStatus(raw map[string]interface{}) {
+	projectStatus, ok := raw["projectStatus"]
+	if !ok || projectStatus == nil {
+		return
+	}
+	switch value := projectStatus.(type) {
+	case string:
+		return
+	case float64:
+		raw["projectStatus"] = fmt.Sprintf("%g", value)
+	case json.Number:
+		raw["projectStatus"] = value.String()
+	default:
+		raw["projectStatus"] = fmt.Sprint(value)
+	}
 }
 
 func enableDNSCert(client *taikungoclient.Client, args JSONPayloadArgs) (*mcp_golang.ToolResponse, error) {

@@ -55,11 +55,15 @@ func TestBuildProjectServiceStatusResponseIncludesBindingsAndToggles(t *testing.
 	project.SetDiskSize(40)
 	project.SetFlavor("m5.large")
 	project.SetMaxSpotPrice(0.42)
+	project.AccessIp = "203.0.113.10"
 
 	response := buildProjectServiceStatusResponse(*project)
 
 	if response.ProjectID != 953 || response.ProjectName != "minio-bkup-8apr2" {
 		t.Fatalf("expected project identity fields, got %+v", response)
+	}
+	if response.AccessIP != "203.0.113.10" {
+		t.Fatalf("expected accessIp to be included, got %+v", response.AccessIP)
 	}
 	if !response.HasKubeconfigFile {
 		t.Fatalf("expected kubeconfig flag to be true, got %+v", response)
