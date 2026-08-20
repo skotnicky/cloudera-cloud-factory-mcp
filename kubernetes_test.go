@@ -38,6 +38,16 @@ func TestNormalizeKubeConfigRoleIDPreservesNonAWSRoleSelection(t *testing.T) {
 	}
 }
 
+func TestNormalizeKubeConfigRoleIDDefaultsNonAWSToView(t *testing.T) {
+	roleID, errorResp := normalizeKubeConfigRoleID(77, "OpenStack", 0)
+	if errorResp != nil {
+		t.Fatalf("expected non-AWS kubeconfig role defaulting to succeed, got %+v", errorResp)
+	}
+	if roleID != defaultReadOnlyKubeConfigRoleID {
+		t.Fatalf("expected non-AWS projects to default to view role %d, got %d", defaultReadOnlyKubeConfigRoleID, roleID)
+	}
+}
+
 func TestParseInt32RejectsOutOfRangeValues(t *testing.T) {
 	if got := parseInt32("2147483647"); got != 2147483647 {
 		t.Fatalf("expected max int32 to parse, got %d", got)
@@ -137,6 +147,41 @@ func TestListKubernetesResourcesInvalidKindIncludesAllowedKinds(t *testing.T) {
 	}
 	if !strings.Contains(result.Details, "Pods") || !strings.Contains(result.Details, "Sts") {
 		t.Fatalf("expected allowed list kinds in details, got %+v", result)
+	}
+}
+
+func TestDescribeClusterIssuerReturnsActionableUnsupportedError(t *testing.T) {
+	response, err := describeKubernetesResource(nil, DescribeKubernetesResourceArgs{
+		ProjectID: 1,
+		Kind:      "ClusterIssuer",
+		Name:      "ccf-default",
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	result := decodeToolResponseJSON[ErrorResponse](t, response)
+	if !strings.Contains(result.Error, "ClusterIssuer describe is not supported") {
+		t.Fatalf("expected ClusterIssuer unsupported error, got %+v", result)
+	}
+	if !strings.Contains(result.Details, "kubectl get clusterissuer ccf-default") {
+		t.Fatalf("expected kubectl remediation hint, got %+v", result)
+	}
+}
+
+func TestDescribeCrdCcfDefaultReturnsClusterIssuerHint(t *testing.T) {
+	response, err := describeKubernetesResource(nil, DescribeKubernetesResourceArgs{
+		ProjectID: 1,
+		Kind:      "Crd",
+		Name:      "ccf-default",
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	result := decodeToolResponseJSON[ErrorResponse](t, response)
+	if !strings.Contains(result.Details, "not a CustomResourceDefinition name") {
+		t.Fatalf("expected CRD-vs-ClusterIssuer hint, got %+v", result)
 	}
 }
 

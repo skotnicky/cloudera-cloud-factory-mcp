@@ -784,7 +784,7 @@ func main() {
 	}
 	logger.Println("Registered catalog-delete tool")
 
-	err = registerScopedTool(server, "bind-projects-to-catalog", "Bind one or more projects to a catalog so they can install apps from it", func(ctx context.Context, args BindProjectsToCatalogArgs) (*mcp_golang.ToolResponse, error) {
+	err = registerScopedTool(server, "bind-projects-to-catalog", "Bind one or more projects to a catalog so they can install apps from it. Projects must be Ready and have an admin kubeconfig; run preflight-project or wait-for-project first.", func(ctx context.Context, args BindProjectsToCatalogArgs) (*mcp_golang.ToolResponse, error) {
 		return bindProjectsToCatalog(clientFromContext(ctx), args)
 	})
 	if err != nil {
@@ -896,7 +896,7 @@ func main() {
 	}
 	logger.Println("Registered catalog-app-defaults-set tool")
 
-	err = registerScopedTool(server, "app-install", "Install a new application instance with optional defaults and overrides. If timeout is omitted, the install request defaults to 10 minutes; TTL defaults to 10 minutes; larger applications may need a higher timeout.", func(ctx context.Context, args InstallAppArgs) (*mcp_golang.ToolResponse, error) {
+	err = registerScopedTool(server, "app-install", "Install a new application instance with optional defaults and overrides. The target project must be Ready and have an admin kubeconfig; run preflight-project or wait-for-project first. If timeout is omitted, the install request defaults to 10 minutes; TTL defaults to 10 minutes; larger applications may need a higher timeout.", func(ctx context.Context, args InstallAppArgs) (*mcp_golang.ToolResponse, error) {
 		return installApp(ctx, clientFromContext(ctx), args)
 	})
 	if err != nil {

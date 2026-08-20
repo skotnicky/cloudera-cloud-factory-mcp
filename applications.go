@@ -208,6 +208,56 @@ func resolveInstallAppTTL(ttl int32) (int32, bool, string) {
 	return ttl, false, ""
 }
 
+func kubeAppProjectPrerequisiteError(projectID int32, status string, health string, hasKubeconfig bool, operation string) *ErrorResponse {
+	if strings.TrimSpace(status) != "Ready" {
+		return &ErrorResponse{
+			Error:   fmt.Sprintf("Project %d is not ready for %s", projectID, operation),
+			Details: fmt.Sprintf("Project status is %q. Wait for project Ready and admin kubeconfig availability before installing apps or binding catalogs.", status),
+		}
+	}
+	normalizedHealth := strings.TrimSpace(health)
+	if normalizedHealth != "Healthy" && normalizedHealth != "Warning" {
+		return &ErrorResponse{
+			Error:   fmt.Sprintf("Project %d health is not ready for %s", projectID, operation),
+			Details: fmt.Sprintf("Project health is %q. Resolve cluster health before installing apps or binding catalogs.", health),
+		}
+	}
+	if !hasKubeconfig {
+		return &ErrorResponse{
+			Error:   fmt.Sprintf("Project %d has no admin kubeconfig for %s", projectID, operation),
+			Details: "Commit/provision the project first, then poll wait-for-project or preflight-project until kubeconfig is available.",
+		}
+	}
+	return nil
+}
+
+func ensureProjectReadyForKubeApp(ctx context.Context, client *taikungoclient.Client, projectID int32, operation string) *mcp_golang.ToolResponse {
+	serversResult, response, err := client.Client.ServersAPI.ServersDetails(ctx, projectID).Execute()
+	if err != nil {
+		return apiErrorInfoFromResponse(response, err).toolResponse()
+	}
+	if errorResp := checkResponse(response, operation+" preflight"); errorResp != nil {
+		return errorResp
+	}
+	if serversResult == nil {
+		return createJSONResponse(ErrorResponse{
+			Error: fmt.Sprintf("No project details returned for project %d", projectID),
+		})
+	}
+
+	project := serversResult.GetProject()
+	if prereq := kubeAppProjectPrerequisiteError(
+		projectID,
+		strings.TrimSpace(string(project.GetStatus())),
+		strings.TrimSpace(string(project.GetHealth())),
+		project.GetHasKubeConfigFile(),
+		operation); prereq != nil {
+		return createJSONResponse(*prereq)
+	}
+
+	return nil
+}
+
 func installApp(ctx context.Context, client *taikungoclient.Client, args InstallAppArgs) (*mcp_golang.ToolResponse, error) {
 	installTimeout, timeoutDefaulted := resolveInstallAppTimeout(args.Timeout)
 	installTTL, ttlDefaulted, ttlValidationError := resolveInstallAppTTL(args.TTL)
@@ -215,6 +265,9 @@ func installApp(ctx context.Context, client *taikungoclient.Client, args Install
 		return createJSONResponse(ErrorResponse{
 			Error: ttlValidationError,
 		}), nil
+	}
+	if errorResp := ensureProjectReadyForKubeApp(ctx, client, args.ProjectID, "app install"); errorResp != nil {
+		return errorResp, nil
 	}
 
 	createCmd := taikuncore.NewCreateProjectAppCommand()

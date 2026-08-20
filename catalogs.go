@@ -289,6 +289,12 @@ func deleteCatalog(client *taikungoclient.Client, args DeleteCatalogArgs) (*mcp_
 func bindProjectsToCatalog(client *taikungoclient.Client, args BindProjectsToCatalogArgs) (*mcp_golang.ToolResponse, error) {
 	ctx := context.Background()
 
+	for _, projectID := range args.ProjectIDs {
+		if errorResp := ensureProjectReadyForKubeApp(ctx, client, projectID, "catalog binding"); errorResp != nil {
+			return errorResp, nil
+		}
+	}
+
 	response, err := client.Client.CatalogAPI.CatalogAddProject(ctx, args.CatalogID).
 		RequestBody(args.ProjectIDs).
 		Execute()
