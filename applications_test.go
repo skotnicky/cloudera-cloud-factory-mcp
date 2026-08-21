@@ -96,7 +96,7 @@ func TestKubeAppProjectPrerequisiteErrorBlocksMissingKubeconfig(t *testing.T) {
 	if errResp == nil {
 		t.Fatalf("expected project without kubeconfig to be blocked")
 	}
-	if !strings.Contains(errResp.Error, "no admin kubeconfig") || !strings.Contains(errResp.Details, "preflight-project") {
+	if !strings.Contains(errResp.Error, "no platform kubeconfig") || !strings.Contains(errResp.Details, "preflight-project") {
 		t.Fatalf("expected kubeconfig guidance, got %+v", errResp)
 	}
 }

@@ -212,7 +212,7 @@ func kubeAppProjectPrerequisiteError(projectID int32, status string, health stri
 	if strings.TrimSpace(status) != "Ready" {
 		return &ErrorResponse{
 			Error:   fmt.Sprintf("Project %d is not ready for %s", projectID, operation),
-			Details: fmt.Sprintf("Project status is %q. Wait for project Ready and admin kubeconfig availability before installing apps or binding catalogs.", status),
+			Details: fmt.Sprintf("Project status is %q. Wait for project Ready and platform kubeconfig availability before installing apps or binding catalogs.", status),
 		}
 	}
 	normalizedHealth := strings.TrimSpace(health)
@@ -224,7 +224,7 @@ func kubeAppProjectPrerequisiteError(projectID int32, status string, health stri
 	}
 	if !hasKubeconfig {
 		return &ErrorResponse{
-			Error:   fmt.Sprintf("Project %d has no admin kubeconfig for %s", projectID, operation),
+			Error:   fmt.Sprintf("Project %d has no platform kubeconfig for %s", projectID, operation),
 			Details: "Commit/provision the project first, then poll wait-for-project or preflight-project until kubeconfig is available.",
 		}
 	}
