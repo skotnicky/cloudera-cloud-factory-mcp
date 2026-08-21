@@ -522,7 +522,7 @@ type CreateKubeConfigArgs struct {
 	ProjectID              int32  `json:"projectId" jsonschema:"required,description=The project ID to create the kubeconfig for"`
 	IsAccessibleForAll     bool   `json:"isAccessibleForAll,omitempty" jsonschema:"description=Whether the kubeconfig is accessible for all (default: false)"`
 	IsAccessibleForManager bool   `json:"isAccessibleForManager,omitempty" jsonschema:"description=Whether the kubeconfig is accessible for managers (default: false)"`
-	KubeConfigRoleId       int32  `json:"kubeConfigRoleId,omitempty" jsonschema:"description=The role ID for the kubeconfig (optional)"`
+	KubeConfigRoleId       int32  `json:"kubeConfigRoleId,omitempty" jsonschema:"description=The role ID for the kubeconfig (optional). Defaults to read-only view role on non-AWS projects and cluster-admin role on AWS projects."`
 	UserId                 string `json:"userId,omitempty" jsonschema:"description=The user ID for the kubeconfig (optional)"`
 	Namespace              string `json:"namespace,omitempty" jsonschema:"description=The namespace for the kubeconfig (optional)"`
 	TTL                    int32  `json:"ttl,omitempty" jsonschema:"description=The TTL for the kubeconfig in minutes (optional)"`
@@ -560,6 +560,7 @@ type KubernetesResourceKindsArgs struct{}
 type ListKubeConfigRolesArgs struct{}
 
 const awsKubeConfigRoleID int32 = 1
+const defaultReadOnlyKubeConfigRoleID int32 = 4
 
 type kubernetesListKindSpec struct {
 	resourcePath       string
@@ -742,6 +743,9 @@ func resolveProjectCloudType(client *taikungoclient.Client, projectID int32) (st
 
 func normalizeKubeConfigRoleID(projectID int32, cloudType string, requestedRoleID int32) (int32, *mcp_golang.ToolResponse) {
 	if !strings.EqualFold(strings.TrimSpace(cloudType), "AWS") {
+		if requestedRoleID == 0 {
+			return defaultReadOnlyKubeConfigRoleID, nil
+		}
 		return requestedRoleID, nil
 	}
 	if requestedRoleID == 0 {
@@ -1355,6 +1359,10 @@ func listKubernetesResources(client *taikungoclient.Client, args ListKubernetesR
 func describeKubernetesResource(client *taikungoclient.Client, args DescribeKubernetesResourceArgs) (*mcp_golang.ToolResponse, error) {
 	ctx := context.Background()
 
+	if hint := unsupportedClusterIssuerDescribeResponse(args.Kind, args.Name); hint != nil {
+		return hint, nil
+	}
+
 	kind, ok := normalizeOperationKubernetesKind(args.Kind)
 	if !ok {
 		return invalidKubernetesKindResponse(args.Kind, "describe-kubernetes-resource", kubernetesOperationKindStrings()), nil
@@ -1386,6 +1394,32 @@ func describeKubernetesResource(client *taikungoclient.Client, args DescribeKube
 		Success: true,
 	}
 	return createJSONResponse(resp), nil
+}
+
+func unsupportedClusterIssuerDescribeResponse(kind string, name string) *mcp_golang.ToolResponse {
+	normalizedKind := strings.ToLower(strings.TrimSpace(kind))
+	normalizedName := strings.ToLower(strings.TrimSpace(name))
+
+	if normalizedKind == "clusterissuer" ||
+		normalizedKind == "clusterissuers" ||
+		normalizedKind == "clusterissuer.cert-manager.io" ||
+		normalizedKind == "clusterissuers.cert-manager.io" ||
+		((normalizedKind == "crd" || normalizedKind == "customresourcedefinition" || normalizedKind == "customresourcedefinitions") && normalizedName == "ccf-default") {
+		issuerName := strings.TrimSpace(name)
+		if issuerName == "" {
+			issuerName = "ccf-default"
+		}
+		details := fmt.Sprintf("The current Taikun API enum does not expose ClusterIssuer; use a downloaded kubeconfig with kubectl get clusterissuer %s, or add ClusterIssuer support to the Taikun API before using this MCP tool.", issuerName)
+		if normalizedKind == "crd" || normalizedKind == "customresourcedefinition" || normalizedKind == "customresourcedefinitions" {
+			details = fmt.Sprintf("%s is a ClusterIssuer object name, not a CustomResourceDefinition name. %s", issuerName, details)
+		}
+		return createJSONResponse(ErrorResponse{
+			Error:   "ClusterIssuer describe is not supported by the Taikun Kubernetes resource API",
+			Details: details,
+		})
+	}
+
+	return nil
 }
 
 func deleteKubernetesResource(client *taikungoclient.Client, args DeleteKubernetesResourceArgs) (*mcp_golang.ToolResponse, error) {

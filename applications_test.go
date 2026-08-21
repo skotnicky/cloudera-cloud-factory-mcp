@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestResolveInstallAppTimeoutDefaultsToTenMinutes(t *testing.T) {
 	timeout, defaulted := resolveInstallAppTimeout(0)
@@ -58,5 +61,48 @@ func TestResolveInstallAppTTLRejectsOutOfRangeValue(t *testing.T) {
 	}
 	if validationError == "" {
 		t.Fatalf("expected ttl validation error for out of range value")
+	}
+}
+
+func TestKubeAppProjectPrerequisiteErrorBlocksNonReadyProject(t *testing.T) {
+	errResp := kubeAppProjectPrerequisiteError(336, "Updating", "Healthy", true, "app install")
+	if errResp == nil {
+		t.Fatalf("expected non-ready project to be blocked")
+	}
+	if !strings.Contains(errResp.Error, "not ready") || !strings.Contains(errResp.Details, "Wait for project Ready") {
+		t.Fatalf("expected readiness guidance, got %+v", errResp)
+	}
+}
+
+func TestKubeAppProjectPrerequisiteErrorBlocksUnhealthyProject(t *testing.T) {
+	errResp := kubeAppProjectPrerequisiteError(336, "Ready", "Unhealthy", true, "app install")
+	if errResp == nil {
+		t.Fatalf("expected unhealthy project to be blocked")
+	}
+	if !strings.Contains(errResp.Error, "health is not ready") || !strings.Contains(errResp.Details, "Resolve cluster health") {
+		t.Fatalf("expected health guidance, got %+v", errResp)
+	}
+}
+
+func TestKubeAppProjectPrerequisiteErrorBlocksUnknownHealth(t *testing.T) {
+	errResp := kubeAppProjectPrerequisiteError(336, "Ready", "", true, "app install")
+	if errResp == nil {
+		t.Fatalf("expected empty health to be blocked")
+	}
+}
+
+func TestKubeAppProjectPrerequisiteErrorBlocksMissingKubeconfig(t *testing.T) {
+	errResp := kubeAppProjectPrerequisiteError(336, "Ready", "Healthy", false, "catalog binding")
+	if errResp == nil {
+		t.Fatalf("expected project without kubeconfig to be blocked")
+	}
+	if !strings.Contains(errResp.Error, "no platform kubeconfig") || !strings.Contains(errResp.Details, "preflight-project") {
+		t.Fatalf("expected kubeconfig guidance, got %+v", errResp)
+	}
+}
+
+func TestKubeAppProjectPrerequisiteErrorAllowsReadyProjectWithKubeconfig(t *testing.T) {
+	if errResp := kubeAppProjectPrerequisiteError(336, "Ready", "Warning", true, "app install"); errResp != nil {
+		t.Fatalf("expected ready project with kubeconfig to pass, got %+v", errResp)
 	}
 }
