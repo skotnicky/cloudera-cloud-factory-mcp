@@ -151,6 +151,7 @@ var toolRequiredScopes = map[string][]string{
 	"deploy-kubernetes-resources":    {"scope:kubernetes:write"},
 	"create-kubeconfig":              {"scope:kubernetes:read"},
 	"get-kubeconfig":                 {"scope:kubernetes:read"},
+	"list-kubeconfigs":               {"scope:kubernetes:read"},
 	"list-kubeconfig-roles":          {"scope:kubernetes:read"},
 	"list-kubernetes-resource-kinds": {},
 	"describe-payload":               {},

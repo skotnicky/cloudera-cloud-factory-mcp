@@ -4,6 +4,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	taikuncore "github.com/itera-io/taikungoclient/client"
 )
 
 func TestNormalizeKubeConfigRoleIDDefaultsAWSProjectsToRoleOne(t *testing.T) {
@@ -38,13 +40,73 @@ func TestNormalizeKubeConfigRoleIDPreservesNonAWSRoleSelection(t *testing.T) {
 	}
 }
 
-func TestNormalizeKubeConfigRoleIDDefaultsNonAWSToView(t *testing.T) {
+func TestNormalizeKubeConfigRoleIDDefaultsNonAWSToClusterAdmin(t *testing.T) {
 	roleID, errorResp := normalizeKubeConfigRoleID(77, "OpenStack", 0)
 	if errorResp != nil {
 		t.Fatalf("expected non-AWS kubeconfig role defaulting to succeed, got %+v", errorResp)
 	}
-	if roleID != defaultReadOnlyKubeConfigRoleID {
-		t.Fatalf("expected non-AWS projects to default to view role %d, got %d", defaultReadOnlyKubeConfigRoleID, roleID)
+	if roleID != defaultKubeConfigRoleID {
+		t.Fatalf("expected non-AWS projects to default to cluster-admin role %d, got %d", defaultKubeConfigRoleID, roleID)
+	}
+}
+
+func TestNormalizeKubeConfigRoleIDAllowsExplicitViewRoleOnNonAWS(t *testing.T) {
+	roleID, errorResp := normalizeKubeConfigRoleID(77, "OpenStack", viewKubeConfigRoleID)
+	if errorResp != nil {
+		t.Fatalf("expected explicit view role on non-AWS to succeed, got %+v", errorResp)
+	}
+	if roleID != viewKubeConfigRoleID {
+		t.Fatalf("expected view role %d, got %d", viewKubeConfigRoleID, roleID)
+	}
+}
+
+func TestSelectDownloadableKubeConfigPrefersClusterAdmin(t *testing.T) {
+	items := []taikuncore.KubeConfigForUserDto{
+		{Id: 10, ProjectId: 77, KubeConfigRoleName: "view", CanDownload: true},
+		{Id: 11, ProjectId: 77, KubeConfigRoleName: "cluster-admin", CanDownload: true},
+	}
+	selection, errResp := selectDownloadableKubeConfig(items, 77, 0)
+	if errResp != nil {
+		t.Fatalf("expected selection to succeed, got %+v", errResp)
+	}
+	if selection.ID != 11 || selection.KubeConfigRoleName != "cluster-admin" {
+		t.Fatalf("expected cluster-admin kubeconfig 11, got %+v", selection)
+	}
+}
+
+func TestSelectDownloadableKubeConfigUsesRequestedID(t *testing.T) {
+	items := []taikuncore.KubeConfigForUserDto{
+		{Id: 10, ProjectId: 77, KubeConfigRoleName: "view", CanDownload: true},
+		{Id: 11, ProjectId: 77, KubeConfigRoleName: "cluster-admin", CanDownload: true},
+	}
+	selection, errResp := selectDownloadableKubeConfig(items, 77, 10)
+	if errResp != nil {
+		t.Fatalf("expected selection to succeed, got %+v", errResp)
+	}
+	if selection.ID != 10 || selection.KubeConfigRoleName != "view" {
+		t.Fatalf("expected requested view kubeconfig 10, got %+v", selection)
+	}
+}
+
+func TestSelectDownloadableKubeConfigRejectsNonDownloadableRequestedID(t *testing.T) {
+	items := []taikuncore.KubeConfigForUserDto{
+		{Id: 10, ProjectId: 77, KubeConfigRoleName: "view", CanDownload: false},
+	}
+	_, errResp := selectDownloadableKubeConfig(items, 77, 10)
+	if errResp == nil {
+		t.Fatalf("expected non-downloadable kubeconfig to be rejected")
+	}
+	if !strings.Contains(errResp.Error, "not downloadable") {
+		t.Fatalf("expected downloadability error, got %+v", errResp)
+	}
+}
+
+func TestKubeConfigRoleMappings(t *testing.T) {
+	if got := kubeConfigRoleIDFromName("cluster-admin"); got != 1 {
+		t.Fatalf("expected cluster-admin to map to 1, got %d", got)
+	}
+	if got := kubeConfigRoleNameFromID(4); got != "view" {
+		t.Fatalf("expected role 4 to map to view, got %q", got)
 	}
 }
 

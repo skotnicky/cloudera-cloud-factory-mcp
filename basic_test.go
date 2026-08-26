@@ -714,6 +714,29 @@ func TestArgumentStructs(t *testing.T) {
 				AccessProfileID: 456,
 			},
 		},
+		{
+			name: "CreateKubeConfigArgs",
+			data: CreateKubeConfigArgs{
+				ProjectID:        123,
+				KubeConfigRoleId: 1,
+				TTL:              60,
+			},
+		},
+		{
+			name: "GetKubeConfigArgs",
+			data: GetKubeConfigArgs{
+				ProjectID:    123,
+				KubeconfigID: 456,
+				SavePath:     "/tmp/kubeconfig.yaml",
+			},
+		},
+		{
+			name: "ListKubeConfigsArgs",
+			data: ListKubeConfigsArgs{
+				ProjectID: 123,
+				Limit:     50,
+			},
+		},
 	}
 
 	for _, tt := range tests {
