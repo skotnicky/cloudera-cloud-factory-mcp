@@ -522,15 +522,22 @@ type CreateKubeConfigArgs struct {
 	ProjectID              int32  `json:"projectId" jsonschema:"required,description=The project ID to create the kubeconfig for"`
 	IsAccessibleForAll     bool   `json:"isAccessibleForAll,omitempty" jsonschema:"description=Whether the kubeconfig is accessible for all (default: false)"`
 	IsAccessibleForManager bool   `json:"isAccessibleForManager,omitempty" jsonschema:"description=Whether the kubeconfig is accessible for managers (default: false)"`
-	KubeConfigRoleId       int32  `json:"kubeConfigRoleId,omitempty" jsonschema:"description=The role ID for the kubeconfig (optional). Defaults to read-only view role on non-AWS projects and cluster-admin role on AWS projects."`
+	KubeConfigRoleId       int32  `json:"kubeConfigRoleId,omitempty" jsonschema:"description=The role ID for the kubeconfig (optional). Defaults to cluster-admin (1). Role IDs: 1=cluster-admin, 2=admin, 3=edit, 4=view. AWS projects only support role 1."`
 	UserId                 string `json:"userId,omitempty" jsonschema:"description=The user ID for the kubeconfig (optional)"`
 	Namespace              string `json:"namespace,omitempty" jsonschema:"description=The namespace for the kubeconfig (optional)"`
 	TTL                    int32  `json:"ttl,omitempty" jsonschema:"description=The TTL for the kubeconfig in minutes (optional)"`
 }
 
 type GetKubeConfigArgs struct {
-	ProjectID int32  `json:"projectId" jsonschema:"required,description=The project ID to get the kubeconfig for"`
-	SavePath  string `json:"savePath,omitempty" jsonschema:"description=Optional path to save kubeconfig as a YAML file"`
+	ProjectID    int32  `json:"projectId" jsonschema:"required,description=The project ID to get the kubeconfig for"`
+	KubeconfigID int32  `json:"kubeconfigId,omitempty" jsonschema:"description=Optional kubeconfig ID to download. When omitted, prefers a downloadable cluster-admin or admin kubeconfig. Use list-kubeconfigs to inspect available IDs."`
+	SavePath     string `json:"savePath,omitempty" jsonschema:"description=Optional path to save kubeconfig as a YAML file"`
+}
+
+type ListKubeConfigsArgs struct {
+	ProjectID int32 `json:"projectId" jsonschema:"required,description=The project ID to list kubeconfigs for"`
+	Limit     int32 `json:"limit,omitempty" jsonschema:"description=Maximum number of results to return (optional)"`
+	Offset    int32 `json:"offset,omitempty" jsonschema:"description=Number of results to skip (optional)"`
 }
 
 type ListKubernetesResourcesArgs struct {
@@ -559,8 +566,33 @@ type KubernetesResourceKindsArgs struct{}
 
 type ListKubeConfigRolesArgs struct{}
 
+type KubeConfigListItemSummary struct {
+	ID                     int32  `json:"id"`
+	DisplayName            string `json:"displayName,omitempty"`
+	ProjectID              int32  `json:"projectId"`
+	KubeConfigRoleName     string `json:"kubeConfigRoleName"`
+	KubeConfigRoleID       int32  `json:"kubeConfigRoleId,omitempty"`
+	CanDownload            bool   `json:"canDownload"`
+	CanAccessTerminal      bool   `json:"canAccessTerminal"`
+	CanDelete              bool   `json:"canDelete"`
+	ExpirationDate         string `json:"expirationDate,omitempty"`
+	IsAccessibleForAll     bool   `json:"isAccessibleForAll"`
+	IsAccessibleForManager bool   `json:"isAccessibleForManager"`
+	Namespace              string `json:"namespace,omitempty"`
+	CreatedAt              string `json:"createdAt,omitempty"`
+	CreatedBy              string `json:"createdBy,omitempty"`
+}
+
+type kubeConfigSelection struct {
+	ID                 int32
+	DisplayName        string
+	KubeConfigRoleName string
+	KubeConfigRoleID   int32
+}
+
 const awsKubeConfigRoleID int32 = 1
-const defaultReadOnlyKubeConfigRoleID int32 = 4
+const defaultKubeConfigRoleID int32 = 1
+const viewKubeConfigRoleID int32 = 4
 
 type kubernetesListKindSpec struct {
 	resourcePath       string
@@ -741,24 +773,124 @@ func resolveProjectCloudType(client *taikungoclient.Client, projectID int32) (st
 	return string(projectList.Data[0].GetCloudType()), nil
 }
 
+func kubeConfigRoleNameFromID(roleID int32) string {
+	switch roleID {
+	case 1:
+		return "cluster-admin"
+	case 2:
+		return "admin"
+	case 3:
+		return "edit"
+	case 4:
+		return "view"
+	default:
+		return ""
+	}
+}
+
+func kubeConfigRoleIDFromName(roleName string) int32 {
+	switch strings.ToLower(strings.TrimSpace(roleName)) {
+	case "cluster-admin":
+		return 1
+	case "admin":
+		return 2
+	case "edit":
+		return 3
+	case "view":
+		return 4
+	default:
+		return 0
+	}
+}
+
+func summarizeKubeConfigListItem(item taikuncore.KubeConfigForUserDto) KubeConfigListItemSummary {
+	roleName := strings.TrimSpace(item.KubeConfigRoleName)
+	summary := KubeConfigListItemSummary{
+		ID:                     item.Id,
+		DisplayName:            strings.TrimSpace(item.GetDisplayName()),
+		ProjectID:              item.ProjectId,
+		KubeConfigRoleName:     roleName,
+		KubeConfigRoleID:       kubeConfigRoleIDFromName(roleName),
+		CanDownload:            item.CanDownload,
+		CanAccessTerminal:      item.CanAccessTerminal,
+		CanDelete:              item.CanDelete,
+		ExpirationDate:         strings.TrimSpace(item.GetExpirationDate()),
+		IsAccessibleForAll:     item.IsAccessibleForAll,
+		IsAccessibleForManager: item.IsAccessibleForManager,
+		Namespace:              strings.TrimSpace(item.GetNamespace()),
+		CreatedAt:              strings.TrimSpace(item.GetCreatedAt()),
+		CreatedBy:              strings.TrimSpace(item.GetCreatedBy()),
+	}
+	return summary
+}
+
 func normalizeKubeConfigRoleID(projectID int32, cloudType string, requestedRoleID int32) (int32, *mcp_golang.ToolResponse) {
-	if !strings.EqualFold(strings.TrimSpace(cloudType), "AWS") {
-		if requestedRoleID == 0 {
-			return defaultReadOnlyKubeConfigRoleID, nil
-		}
-		return requestedRoleID, nil
-	}
 	if requestedRoleID == 0 {
-		return awsKubeConfigRoleID, nil
+		requestedRoleID = defaultKubeConfigRoleID
 	}
-	if requestedRoleID != awsKubeConfigRoleID {
+	if strings.EqualFold(strings.TrimSpace(cloudType), "AWS") && requestedRoleID != awsKubeConfigRoleID {
 		return 0, createJSONResponse(ErrorResponse{
 			Error:   fmt.Sprintf("AWS-based project %d only supports kubeConfigRoleId %d", projectID, awsKubeConfigRoleID),
 			Details: fmt.Sprintf("Project cloudType %q requires kubeConfigRoleId %d when creating kubeconfigs", cloudType, awsKubeConfigRoleID),
 		})
 	}
 
-	return awsKubeConfigRoleID, nil
+	return requestedRoleID, nil
+}
+
+func selectDownloadableKubeConfig(items []taikuncore.KubeConfigForUserDto, projectID int32, requestedID int32) (*kubeConfigSelection, *ErrorResponse) {
+	if requestedID != 0 {
+		for _, item := range items {
+			if item.ProjectId != projectID || item.Id != requestedID {
+				continue
+			}
+			if !item.CanDownload {
+				return nil, &ErrorResponse{
+					Error:   fmt.Sprintf("Kubeconfig %d for project %d is not downloadable", requestedID, projectID),
+					Details: "Use list-kubeconfigs to inspect canDownload and pick another kubeconfig ID, or create-kubeconfig to add one.",
+				}
+			}
+			roleName := strings.TrimSpace(item.KubeConfigRoleName)
+			return &kubeConfigSelection{
+				ID:                 item.Id,
+				DisplayName:        strings.TrimSpace(item.GetDisplayName()),
+				KubeConfigRoleName: roleName,
+				KubeConfigRoleID:   kubeConfigRoleIDFromName(roleName),
+			}, nil
+		}
+		return nil, &ErrorResponse{
+			Error:   fmt.Sprintf("Kubeconfig %d not found for project %d", requestedID, projectID),
+			Details: "Use list-kubeconfigs to see available kubeconfigs for this project.",
+		}
+	}
+
+	var fallback *kubeConfigSelection
+	for _, item := range items {
+		if item.ProjectId != projectID || !item.CanDownload {
+			continue
+		}
+		roleName := strings.TrimSpace(item.KubeConfigRoleName)
+		selection := &kubeConfigSelection{
+			ID:                 item.Id,
+			DisplayName:        strings.TrimSpace(item.GetDisplayName()),
+			KubeConfigRoleName: roleName,
+			KubeConfigRoleID:   kubeConfigRoleIDFromName(roleName),
+		}
+		if roleName == "cluster-admin" || roleName == "admin" {
+			return selection, nil
+		}
+		if fallback == nil {
+			fallback = selection
+		}
+	}
+
+	if fallback == nil {
+		return nil, &ErrorResponse{
+			Error:   fmt.Sprintf("No downloadable kubeconfig found for project %d", projectID),
+			Details: "Use list-kubeconfigs to inspect available entries. If canDownload is false for all entries, create-kubeconfig may be required.",
+		}
+	}
+	return fallback, nil
 }
 
 func deployKubernetesResources(client *taikungoclient.Client, args DeployKubernetesResourcesArgs) (*mcp_golang.ToolResponse, error) {
@@ -830,7 +962,7 @@ func createKubeConfig(client *taikungoclient.Client, args CreateKubeConfigArgs) 
 		createCmd.SetTtl(args.TTL)
 	}
 
-	_, httpResponse, err := client.Client.KubeConfigAPI.KubeconfigCreate(ctx).
+	apiResp, httpResponse, err := client.Client.KubeConfigAPI.KubeconfigCreate(ctx).
 		CreateKubeConfigCommand(*createCmd).
 		Execute()
 
@@ -842,12 +974,24 @@ func createKubeConfig(client *taikungoclient.Client, args CreateKubeConfigArgs) 
 		return errorResp, nil
 	}
 
-	successResp := SuccessResponse{
-		Message: fmt.Sprintf("Kubeconfig created successfully for project %d", args.ProjectID),
-		Success: true,
+	response := map[string]interface{}{
+		"success":          true,
+		"kubeConfigRoleId": kubeConfigRoleID,
+		"message":          fmt.Sprintf("Kubeconfig created successfully for project %d", args.ProjectID),
+	}
+	if roleName := kubeConfigRoleNameFromID(kubeConfigRoleID); roleName != "" {
+		response["kubeConfigRoleName"] = roleName
+	}
+	if apiResp != nil {
+		if kubeconfigID, ok := parseInt32Strict(apiResp.GetId()); ok {
+			response["kubeconfigId"] = kubeconfigID
+		}
+		if apiResp.GetMessage() != "" {
+			response["message"] = apiResp.GetMessage()
+		}
 	}
 
-	return createJSONResponse(successResp), nil
+	return createJSONResponse(response), nil
 }
 
 func getKubeConfig(client *taikungoclient.Client, args GetKubeConfigArgs) (*mcp_golang.ToolResponse, error) {
@@ -865,36 +1009,18 @@ func getKubeConfig(client *taikungoclient.Client, args GetKubeConfigArgs) (*mcp_
 		return errorResp, nil
 	}
 
-	var kubeconfigId int32
-	var fallbackId int32
+	var items []taikuncore.KubeConfigForUserDto
 	if listResp != nil {
-		for _, item := range listResp.Data {
-			if item.ProjectId != args.ProjectID || !item.CanDownload {
-				continue
-			}
-			if item.KubeConfigRoleName == "cluster-admin" || item.KubeConfigRoleName == "admin" {
-				kubeconfigId = item.Id
-				break
-			}
-			if fallbackId == 0 {
-				fallbackId = item.Id
-			}
-		}
+		items = listResp.Data
 	}
 
-	if kubeconfigId == 0 {
-		kubeconfigId = fallbackId
-	}
-
-	if kubeconfigId == 0 {
-		errorResp := ErrorResponse{
-			Error: fmt.Sprintf("No downloadable kubeconfig found for project %d", args.ProjectID),
-		}
-		return createJSONResponse(errorResp), nil
+	selection, selectionErr := selectDownloadableKubeConfig(items, args.ProjectID, args.KubeconfigID)
+	if selectionErr != nil {
+		return createJSONResponse(*selectionErr), nil
 	}
 
 	downloadCmd := taikuncore.NewDownloadKubeConfigCommand()
-	downloadCmd.SetId(kubeconfigId)
+	downloadCmd.SetId(selection.ID)
 	downloadCmd.SetProjectId(args.ProjectID)
 	kubeconfig, downloadHTTPResponse, err := client.Client.KubeConfigAPI.KubeconfigDownload(ctx).
 		DownloadKubeConfigCommand(*downloadCmd).
@@ -936,12 +1062,81 @@ func getKubeConfig(client *taikungoclient.Client, args GetKubeConfigArgs) (*mcp_
 		}), nil
 	}
 
-	return createJSONResponse(map[string]interface{}{
-		"savedPath": savePath,
-		"summary":   summarizeKubeconfig(normalizedKubeconfig),
-		"success":   true,
-		"message":   fmt.Sprintf("Kubeconfig for project %d written to %s. It contains credentials and is intentionally not echoed into the response; read the file or pass it to kubectl with --kubeconfig.", args.ProjectID, savePath),
-	}), nil
+	response := map[string]interface{}{
+		"savedPath":          savePath,
+		"summary":            summarizeKubeconfig(normalizedKubeconfig),
+		"success":            true,
+		"kubeconfigId":       selection.ID,
+		"kubeConfigRoleName": selection.KubeConfigRoleName,
+		"message":            fmt.Sprintf("Kubeconfig %d (%s) for project %d written to %s. It contains credentials and is intentionally not echoed into the response; read the file or pass it to kubectl with --kubeconfig.", selection.ID, selection.KubeConfigRoleName, args.ProjectID, savePath),
+	}
+	if selection.DisplayName != "" {
+		response["displayName"] = selection.DisplayName
+	}
+	if selection.KubeConfigRoleID != 0 {
+		response["kubeConfigRoleId"] = selection.KubeConfigRoleID
+	}
+
+	return createJSONResponse(response), nil
+}
+
+func listKubeConfigs(client *taikungoclient.Client, args ListKubeConfigsArgs) (*mcp_golang.ToolResponse, error) {
+	ctx := context.Background()
+
+	listRequest := client.Client.KubeConfigAPI.KubeconfigList(ctx).
+		ProjectId(args.ProjectID)
+	if args.Limit > 0 {
+		listRequest = listRequest.Limit(args.Limit)
+	}
+	if args.Offset > 0 {
+		listRequest = listRequest.Offset(args.Offset)
+	}
+
+	listResp, httpResponse, err := listRequest.Execute()
+	if err != nil {
+		return createError(httpResponse, err), nil
+	}
+	if errorResp := checkResponse(httpResponse, "list kubeconfigs"); errorResp != nil {
+		return errorResp, nil
+	}
+
+	items := make([]KubeConfigListItemSummary, 0)
+	downloadableCount := 0
+	if listResp != nil {
+		for _, item := range listResp.Data {
+			if item.ProjectId != args.ProjectID {
+				continue
+			}
+			summary := summarizeKubeConfigListItem(item)
+			items = append(items, summary)
+			if summary.CanDownload {
+				downloadableCount++
+			}
+		}
+	}
+
+	total := len(items)
+	if listResp != nil {
+		total = int(listResp.GetTotalCount())
+	}
+
+	listResponse := struct {
+		Items             []KubeConfigListItemSummary `json:"items"`
+		Total             int                         `json:"total"`
+		DownloadableCount int                         `json:"downloadableCount"`
+		ProjectID         int32                       `json:"projectId"`
+		Message           string                      `json:"message"`
+		Success           bool                        `json:"success"`
+	}{
+		Items:             items,
+		Total:             total,
+		DownloadableCount: downloadableCount,
+		ProjectID:         args.ProjectID,
+		Message:           fmt.Sprintf("Found %d kubeconfig(s) for project %d (%d downloadable)", len(items), args.ProjectID, downloadableCount),
+		Success:           true,
+	}
+
+	return createJSONResponse(listResponse), nil
 }
 
 func listKubeConfigRoles(client *taikungoclient.Client, _ ListKubeConfigRolesArgs) (*mcp_golang.ToolResponse, error) {

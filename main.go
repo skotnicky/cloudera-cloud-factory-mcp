@@ -1000,7 +1000,7 @@ func main() {
 	}
 	logger.Println("Registered deploy-kubernetes-resources tool")
 
-	err = registerScopedTool(server, "create-kubeconfig", "Create a new kubeconfig for a project", func(ctx context.Context, args CreateKubeConfigArgs) (*mcp_golang.ToolResponse, error) {
+	err = registerScopedTool(server, "create-kubeconfig", "Create a new kubeconfig for a project. Returns the new kubeconfigId and role. Defaults to cluster-admin (kubeConfigRoleId 1); use list-kubeconfig-roles for all role IDs.", func(ctx context.Context, args CreateKubeConfigArgs) (*mcp_golang.ToolResponse, error) {
 		return createKubeConfig(clientFromContext(ctx), args)
 	})
 	if err != nil {
@@ -1008,13 +1008,21 @@ func main() {
 	}
 	logger.Println("Registered create-kubeconfig tool")
 
-	err = registerScopedTool(server, "get-kubeconfig", "Retrieve the kubeconfig content for a project (optionally save as YAML)", func(ctx context.Context, args GetKubeConfigArgs) (*mcp_golang.ToolResponse, error) {
+	err = registerScopedTool(server, "get-kubeconfig", "Download a kubeconfig for a project to a YAML file. Returns savedPath, kubeconfigId, and kubeConfigRoleName. Optionally pass kubeconfigId from list-kubeconfigs; otherwise prefers a downloadable cluster-admin or admin entry.", func(ctx context.Context, args GetKubeConfigArgs) (*mcp_golang.ToolResponse, error) {
 		return getKubeConfig(clientFromContext(ctx), args)
 	})
 	if err != nil {
 		logger.Fatalf("Failed to register get-kubeconfig tool: %v", err)
 	}
 	logger.Println("Registered get-kubeconfig tool")
+
+	err = registerScopedTool(server, "list-kubeconfigs", "List kubeconfigs for a project, including id, role, canDownload, and expirationDate. Use before get-kubeconfig to pick a downloadable kubeconfig ID.", func(ctx context.Context, args ListKubeConfigsArgs) (*mcp_golang.ToolResponse, error) {
+		return listKubeConfigs(clientFromContext(ctx), args)
+	})
+	if err != nil {
+		logger.Fatalf("Failed to register list-kubeconfigs tool: %v", err)
+	}
+	logger.Println("Registered list-kubeconfigs tool")
 
 	err = registerScopedTool(server, "list-kubeconfig-roles", "List available roles for kubeconfigs", func(ctx context.Context, args ListKubeConfigRolesArgs) (*mcp_golang.ToolResponse, error) {
 		return listKubeConfigRoles(clientFromContext(ctx), args)
