@@ -1,3 +1,5 @@
+# DEPRECATED --- NOT DEVELOPED
+
 # Cloudera Cloud Factory MCP Server
 
 A Model Context Protocol (MCP) server for managing Cloudera Cloud Factory resources from MCP-capable clients such as Claude Desktop and Cursor.
